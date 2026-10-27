@@ -1,0 +1,9 @@
+[workspace]
+members = ["crate/shared", "crate/tool"]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.0"
+
+[workspace.metadata.crane]
+name = "fixture"

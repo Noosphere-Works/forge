@@ -1,0 +1,15 @@
+{
+    "compilerOptions": {
+        "composite": true,
+        "declaration": true,
+        "emitDeclarationOnly": true,
+        "outDir": ".types",
+        "target": "ESNext",
+        "module": "Preserve",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "skipLibCheck": true,
+        "types": []
+    },
+    "include": ["src"]
+}
