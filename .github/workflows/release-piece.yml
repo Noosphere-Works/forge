@@ -1,0 +1,267 @@
+# One piece's release, called by `release.yml` in this repository.
+#
+# `build` builds the piece's package, its gate (a Rust piece's tests run inside it). The
+# `binary` job runs once per release target `plan` found in the flake's
+# `legacyPackages.<system>.npRelease.<piece>.targets`, each on its system's runner and in
+# parallel with the others, and builds, checks and packs that target's portable binary.
+# `publish`, the only job allowed to write, creates the GitHub release once every job it
+# needs passed; a piece with no targets publishes with no assets.
+name: Release piece
+
+on:
+    workflow_call:
+        inputs:
+            piece:
+                description: The piece's name
+                required: true
+                type: string
+            tag:
+                description: The release tag (`<piece>-vX.Y.Z`, or `vX.Y.Z` outside a workspace)
+                required: true
+                type: string
+            note:
+                description: The release note, relative to the project root
+                required: true
+                type: string
+            kind:
+                description: cli, backend, web, library, flake or unknown
+                required: true
+                type: string
+            package:
+                description: The piece's flake package (`packages.<system>.<package>`)
+                required: true
+                type: string
+            targets:
+                description: The release targets `plan` found in the flake, as JSON (`[]` when it lists none)
+                required: true
+                type: string
+            target_sha:
+                description: The commit to release
+                required: true
+                type: string
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.target_sha }}
+                  persist-credentials: false
+            - uses: cachix/install-nix-action@v31
+              with:
+                  extra_nix_config: experimental-features = nix-command flakes
+            - name: Build the package
+              env:
+                  PACKAGE: ${{ inputs.package }}
+              run: |
+                  set -euo pipefail
+                  nix build ".#$PACKAGE" --print-build-logs
+
+    binary:
+        name: ${{ matrix.target }}
+        if: fromJSON(inputs.targets)[0] != null
+        strategy:
+            fail-fast: false
+            matrix:
+                include: ${{ fromJSON(inputs.targets) }}
+        runs-on: ${{ matrix.runner }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.target_sha }}
+                  persist-credentials: false
+            - uses: cachix/install-nix-action@v31
+              with:
+                  extra_nix_config: experimental-features = nix-command flakes
+            - name: Build, check and pack the binary
+              env:
+                  PIECE: ${{ inputs.piece }}
+                  TARGET: ${{ matrix.target }}
+                  SYSTEM: ${{ matrix.system }}
+                  ASSETS: ${{ runner.temp }}/assets
+              run: |
+                  # Build, check and pack one of a piece's release targets, a CLI's or a flake
+                  # piece's alike: the one the flake lists as
+                  # `legacyPackages.<system>.npRelease.<piece>.targets.<target>`, packed as
+                  # `<piece>-<target>.tar.gz`.
+                  #
+                  # Reads PIECE, TARGET, SYSTEM (the system this runner builds) and ASSETS (the
+                  # directory the archive lands in). Whatever builds it, a Linux binary must be
+                  # static (musl), a Windows target ships `bin/<piece>.exe`, and a macOS binary
+                  # must be signed. macOS ships bash 3.2: no mapfile or associative arrays here.
+                  set -euo pipefail
+
+                  fail() {
+                    echo "$PIECE: $*" >&2
+                    exit 1
+                  }
+
+                  # The binary must start: any exit status will do (a binary may want arguments),
+                  # but not "cannot execute" (126, 127) or death by a signal.
+                  smoke() {
+                    local status=0
+                    (cd "$build" && env -i "$1" --help < /dev/null) || status=$?
+                    if [ "$status" -eq 126 ] || [ "$status" -eq 127 ] || [ "$status" -gt 128 ]; then
+                      fail "$2 did not run (exit $status)"
+                    fi
+                  }
+
+                  # Checked before the build, so an unknown target costs no build.
+                  case "$TARGET" in
+                    linux-x86_64 | windows-x86_64 | darwin-aarch64) ;;
+                    *) fail "$TARGET is not a target this workflow builds" ;;
+                  esac
+
+                  build=$(mktemp -d)
+                  out="$build/$TARGET"
+                  nix build ".#legacyPackages.$SYSTEM.npRelease.$PIECE.targets.$TARGET" \
+                    --print-build-logs --out-link "$out"
+                  case "$TARGET" in
+                    linux-x86_64)
+                      binary=$PIECE
+                      bin="$out/bin/$binary"
+                      [ -f "$bin" ] || fail "$TARGET has no bin/$binary"
+                      header=$(readelf -h "$bin") || fail "$TARGET/bin/$binary is not an ELF binary"
+                      grep -q 'X86-64' <<< "$header" || fail "$TARGET/bin/$binary is not an x86-64 binary"
+                      # Captured first: grep -q closing a pipe early would fail readelf under pipefail.
+                      programs=$(readelf -l "$bin")
+                      dynamic=$(readelf -d "$bin")
+                      if grep -q 'program interpreter' <<< "$programs"; then
+                        fail "$TARGET/bin/$binary has a program interpreter; a released Linux binary must be static"
+                      fi
+                      if grep -q /nix/store <<< "$programs$dynamic"; then
+                        echo "$programs$dynamic" | grep /nix/store >&2
+                        fail "$TARGET/bin/$binary refers to /nix/store"
+                      fi
+                      smoke "$bin" "$TARGET/bin/$binary"
+                      ;;
+                    windows-x86_64)
+                      binary="$PIECE.exe"
+                      [ -f "$out/bin/$binary" ] || fail "$TARGET has no bin/$binary"
+                      ;;
+                    darwin-aarch64)
+                      binary=$PIECE
+                      bin="$out/bin/$binary"
+                      [ -f "$bin" ] || fail "$TARGET has no bin/$binary"
+                      # The first line names the binary itself; the rest are the libraries it loads.
+                      links=$(otool -L "$bin")
+                      echo "$links"
+                      libraries=$(tail -n +2 <<< "$links")
+                      if grep -q /nix/store <<< "$libraries"; then
+                        fail "$TARGET/bin/$binary links a library from /nix/store"
+                      fi
+                      codesign -v "$bin" || fail "$TARGET/bin/$binary is not validly signed"
+                      smoke "$bin" "$TARGET/bin/$binary"
+                      # No AppleDouble `._` files in the archive.
+                      export COPYFILE_DISABLE=1
+                      ;;
+                  esac
+                  mkdir -p "$ASSETS"
+                  tar czf "$ASSETS/$PIECE-$TARGET.tar.gz" -C "$out/bin" "$binary"
+                  ls -l "$ASSETS"
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.tag }}-${{ matrix.target }}
+                  path: ${{ runner.temp }}/assets/
+                  if-no-files-found: error
+
+    publish:
+        needs: [build, binary]
+        # A piece with targets publishes once every target's binary is packed; one with
+        # none once it built, with the binary jobs skipped.
+        if: ${{ !cancelled() && needs.build.result == 'success' && (fromJSON(inputs.targets)[0] == null || needs.binary.result == 'success') }}
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        steps:
+            # For the note and the remote: this job never runs project code.
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.target_sha }}
+            - uses: actions/download-artifact@v4
+              if: fromJSON(inputs.targets)[0] != null
+              with:
+                  pattern: ${{ inputs.tag }}-*
+                  merge-multiple: true
+                  path: ${{ runner.temp }}/assets
+            - name: Publish the GitHub release
+              env:
+                  PIECE: ${{ inputs.piece }}
+                  TAG: ${{ inputs.tag }}
+                  NOTE: ${{ inputs.note }}
+                  KIND: ${{ inputs.kind }}
+                  TARGETS: ${{ inputs.targets }}
+                  TARGET_SHA: ${{ inputs.target_sha }}
+                  ASSETS: ${{ runner.temp }}/assets
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  # Publish a piece's GitHub release at the pinned commit, with the archives its
+                  # target jobs packed. A release is published once: an existing tag or release
+                  # is refused, never replaced.
+                  #
+                  # Reads PIECE, TAG, NOTE, KIND, TARGET_SHA, TARGETS (the JSON array of
+                  # {target, system, runner} `plan` found), ASSETS (the directory holding the
+                  # archives; absent for a piece with no targets) and GH_TOKEN. A piece publishes
+                  # one archive, `<piece>-<target>.tar.gz`, per listed target, and nothing else;
+                  # a CLI lists at least one.
+                  set -euo pipefail
+
+                  fail() {
+                    echo "$PIECE: $*" >&2
+                    exit 1
+                  }
+
+                  tagged=$(git ls-remote --tags origin "refs/tags/$TAG")
+                  if [ -n "$tagged" ]; then
+                    fail "tag $TAG already exists on origin"
+                  fi
+                  if gh release view "$TAG" --json tagName > /dev/null 2>&1; then
+                    fail "release $TAG already exists"
+                  fi
+                  if [ ! -f "$NOTE" ]; then
+                    fail "$NOTE is missing at $TARGET_SHA"
+                  fi
+                  archives=()
+                  if [ -d "$ASSETS" ]; then
+                    shopt -s nullglob
+                    archives=("$ASSETS"/*)
+                  fi
+                  if ! listed=$(jq -r '
+                    if type == "array" and all(.[]; type == "object" and (.target | type == "string"))
+                    then .[].target
+                    else error("malformed")
+                    end
+                  ' <<< "$TARGETS" 2> /dev/null); then
+                    fail "TARGETS must be a JSON array of {target, system, runner}, not: $TARGETS"
+                  fi
+                  if [ "$KIND" = cli ] && [ -z "$listed" ]; then
+                    fail "a CLI release needs its archives, and TARGETS lists no target"
+                  fi
+
+                  expected=" " missing=""
+                  while read -r target; do
+                    [ -n "$target" ] || continue
+                    archive="$PIECE-$target.tar.gz"
+                    expected+="$archive "
+                    [ -f "$ASSETS/$archive" ] || missing+=" $archive"
+                  done <<< "$listed"
+                  if [ -n "$missing" ]; then
+                    fail "a release with targets needs an archive per target, and $ASSETS lacks$missing"
+                  fi
+
+                  unexpected=""
+                  for archive in "${archives[@]}"; do
+                    case "$expected" in
+                      *" ${archive##*/} "*) ;;
+                      *) unexpected+=" ${archive##*/}" ;;
+                    esac
+                  done
+                  if [ -n "$unexpected" ]; then
+                    fail "$ASSETS holds files for no listed target:$unexpected"
+                  fi
+
+                  gh release create "$TAG" --target "$TARGET_SHA" --notes-file "$NOTE" "${archives[@]}"

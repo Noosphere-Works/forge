@@ -11,7 +11,7 @@ forge holds np's project recipes for Nix: how a project np emits builds its Rust
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
     forge = {
-      url = "github:noosphere-works/forge/v0.1.0";
+      url = "github:noosphere-works/forge/v0.1.1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -182,6 +182,22 @@ surrealdb = forge.lib.tools.surrealdb {
 - `kind`: `rust-backend` (runs `bin/<piece>`), `typescript-backend` (runs `index.js` with bun) or `web` (static-web-server on the package's `client`).
 - `port`: the port, set as `<PIECE>_PORT`.
 - `site`: for a backend, the web package it serves from its own origin, set as `<PIECE>_SITE_ROOT`. `null` or `""` for none.
+
+## Release
+
+`np release` dispatches the project's `.github/workflows/release.yml`. np emits that file as a stub that calls this repository at the same tag as the `forge` input:
+
+```yaml
+jobs:
+  release:
+    uses: noosphere-works/forge/.github/workflows/release.yml@v0.1.1
+    with:
+      target_sha: ${{ inputs.target_sha }}
+      releases: ${{ inputs.releases }}
+    permissions:
+      contents: write
+    secrets: inherit
+```
 
 To change a recipe, see [CONTRIBUTING.md](CONTRIBUTING.md).
 

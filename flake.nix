@@ -26,6 +26,7 @@
     inputs@{ flake-parts, nixpkgs, ... }:
     let
       lib = import ./lib { inherit inputs; };
+      piece = (builtins.fromTOML (builtins.readFile ./piece/forge/piece.toml)).package;
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
@@ -328,6 +329,12 @@
           };
 
           formatter = pkgs.nixfmt;
+
+          # The release build gate. forge's product is `flake.lib`; this
+          # package installs nothing. `npRelease` lists no archives: a
+          # release publishes the note alone.
+          packages.${piece.name} = pkgs.runCommand "${piece.name}-${piece.version}" { } "mkdir -p $out";
+          legacyPackages.npRelease.${piece.name}.targets = { };
         };
     };
 }

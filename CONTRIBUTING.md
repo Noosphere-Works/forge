@@ -6,7 +6,9 @@ forge's product is `flake.lib` (`lib/`). The root `flake.nix` is the check harne
 
 - `lib/` — the recipes a project calls as `forge.lib`.
 - `fixture/` — a Cargo workspace (`crate/tool`, a CLI whose test runs `git --version`; `crate/shared`, a library) and a bun workspace (`package/api`, a backend; `package/shared`, a library).
-- `flake.nix` — `checks` for each system in `systems`. `nixpkgs` here serves the checks, the formatter and fenix; a project passes its own `pkgs`.
+- `piece/forge/` — the releasable piece: `piece.toml`, and notes under `release/`.
+- `flake.nix` — `checks` for each system in `systems`, plus `packages.forge` and empty `legacyPackages.npRelease.forge.targets` so `np release` can publish the note. `nixpkgs` here serves the checks, the formatter and fenix; a project passes its own `pkgs`.
+- `.github/workflows/` — `check.yml` for the harness; `release.yml` and `release-piece.yml` are the reusable release workflows a project calls at the forge tag it pins. This repository dispatches `release.yml` locally.
 
 ## Checks
 
@@ -16,7 +18,7 @@ CI is Ubuntu. After `nix flake check` it evaluates `checks.<system>.rust-release
 
 ## Versions
 
-This is `v0.1.0`. np pins forge by tag in the input it emits (`github:noosphere-works/forge/v0.1.0`). A change to a recipe is a new forge tag that the np release emitting it pins.
+The releasable piece is `piece/forge/piece.toml`. `np release draft <level>` bumps that version and writes `piece/forge/release/vX.Y.Z/note.md`. The Git tag is `vX.Y.Z`. A release publishes that note; it ships no archives. np pins the tag in the input it emits. A project's `.github/workflows/release.yml` calls this repository's `release.yml` at that same tag (`uses: noosphere-works/forge/.github/workflows/release.yml@<tag>`). `release-piece.yml` stays here: a relative `uses:` inside the called workflow resolves to this repository at that ref. `actions/checkout` in those jobs checks out the calling project.
 
 ## Image workflow
 

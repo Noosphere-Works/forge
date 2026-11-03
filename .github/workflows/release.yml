@@ -1,0 +1,391 @@
+# forge's release workflow. A project dispatches its own
+# `.github/workflows/release.yml`, which calls this file at the same tag as
+# its `forge` input:
+# `uses: noosphere-works/forge/.github/workflows/release.yml@<tag>`.
+# This repository dispatches the same file locally.
+#
+# `np release <change-id>` supplies the commit and every pending release at
+# it. `plan` checks that list against the commit and finds each piece's
+# release targets; then each piece runs `release-piece.yml` in this
+# repository at this ref. A piece with no targets publishes its note alone.
+# It passes on no secret: the pieces publish with the run's own token.
+name: Release
+
+on:
+    workflow_dispatch:
+        inputs:
+            target_sha:
+                description: Commit SHA resolved by np release
+                required: true
+            releases:
+                description: The pending releases at the commit, as JSON (written by np release)
+                required: true
+    workflow_call:
+        inputs:
+            target_sha:
+                description: Commit SHA resolved by np release
+                required: true
+                type: string
+            releases:
+                description: The pending releases at the commit, as JSON (written by np release)
+                required: true
+                type: string
+
+run-name: release ${{ inputs.target_sha }}
+
+permissions:
+    contents: read
+
+concurrency:
+    group: release
+    cancel-in-progress: false
+
+jobs:
+    plan:
+        runs-on: ubuntu-latest
+        outputs:
+            releases: ${{ steps.plan.outputs.releases }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.target_sha }}
+                  persist-credentials: false
+            - uses: cachix/install-nix-action@v31
+              with:
+                  extra_nix_config: experimental-features = nix-command flakes
+            - name: Check the releases
+              id: plan
+              env:
+                  TARGET_SHA: ${{ inputs.target_sha }}
+                  RELEASES: ${{ inputs.releases }}
+              run: |
+                  # Check every release `np release` dispatched against the commit it pinned, find
+                  # each piece's release targets, and hand the checked list to the piece jobs.
+                  #
+                  # Reads TARGET_SHA (the commit to release) and RELEASES (a JSON array of
+                  # {piece, tag, note, kind, package, version}); writes `releases=<json>` to
+                  # GITHUB_OUTPUT, each release with `targets` added: a JSON array of
+                  # {target, system, runner}, empty for a piece whose flake lists none. Every
+                  # problem is reported, each naming its piece, before the run fails.
+                  set -euo pipefail
+
+                  # The systems whose release targets a runner builds, each `<system> <runner>`.
+                  # The flake's other systems are not released.
+                  runners="x86_64-linux ubuntu-latest
+                  aarch64-darwin macos-15"
+
+                  problems=""
+
+                  problem() {
+                    problems+="$1"$'\n'
+                  }
+
+                  # The value of `key` in the `[package]` table of a Cargo.toml or piece.toml,
+                  # unquoted; empty when it is absent or not a plain string
+                  # (`version.workspace = true`).
+                  toml_package_value() {
+                    local raw
+                    raw=$(awk -v key="$2" '
+                      /^[ \t]*\[/ {
+                        header = $0
+                        sub(/#.*/, "", header)
+                        gsub(/[ \t]/, "", header)
+                        in_package = (header == "[package]")
+                        next
+                      }
+                      in_package && $0 ~ ("^[ \t]*" key "[ \t]*=") {
+                        sub(/^[^=]*=[ \t]*/, "")
+                        print
+                        exit
+                      }
+                    ' "$1")
+                    local double='^"([^"]*)"' single="^'([^']*)'"
+                    if [[ "$raw" =~ $double ]] || [[ "$raw" =~ $single ]]; then
+                      printf '%s\n' "${BASH_REMATCH[1]}"
+                    fi
+                  }
+
+                  # The value of `key` in a package.json, when it is a string.
+                  json_value() {
+                    jq -r --arg key "$2" '.[$key] | strings' "$1"
+                  }
+
+                  # Whether the project is a workspace: its root Cargo.toml lists
+                  # `[workspace] members`, its root package.json lists `workspaces`, or a
+                  # `piece/*/piece.toml` exists.
+                  is_workspace() {
+                    local manifest
+                    if [ -f Cargo.toml ] && awk '
+                      /^[ \t]*\[/ {
+                        header = $0
+                        sub(/#.*/, "", header)
+                        gsub(/[ \t]/, "", header)
+                        in_workspace = (header == "[workspace]")
+                        next
+                      }
+                      in_workspace && /^[ \t]*members[ \t]*=/ && !/=[ \t]*\[[ \t]*\]/ { found = 1 }
+                      END { exit !found }
+                    ' Cargo.toml; then
+                      return 0
+                    fi
+                    if [ -f package.json ] && jq -e '(.workspaces // []) | length > 0' package.json > /dev/null; then
+                      return 0
+                    fi
+                    for manifest in piece/*/piece.toml; do
+                      [ -f "$manifest" ] && return 0
+                    done
+                    return 1
+                  }
+
+                  # Check that `manifest` declares `version` (and `name`, when given).
+                  check_manifest() {
+                    local piece=$1 manifest=$2 version=$3 name=${4:-} declared_name declared_version
+                    case "$manifest" in
+                      *.toml)
+                        declared_name=$(toml_package_value "$manifest" name)
+                        declared_version=$(toml_package_value "$manifest" version)
+                        ;;
+                      *)
+                        declared_name=$(json_value "$manifest" name)
+                        declared_version=$(json_value "$manifest" version)
+                        ;;
+                    esac
+                    if [ -n "$name" ] && [ "$declared_name" != "$name" ]; then
+                      problem "$piece: $manifest is named \"$declared_name\", not \"$name\""
+                    fi
+                    if [ "$declared_version" != "$version" ]; then
+                      problem "$piece: $manifest declares version \"$declared_version\", but the release is $version"
+                    fi
+                  }
+
+                  check_release() {
+                    local index=$1 piece tag note kind package version
+                    piece=$(jq -r --argjson i "$index" '.[$i].piece' <<< "$checked")
+                    tag=$(jq -r --argjson i "$index" '.[$i].tag' <<< "$checked")
+                    note=$(jq -r --argjson i "$index" '.[$i].note' <<< "$checked")
+                    kind=$(jq -r --argjson i "$index" '.[$i].kind' <<< "$checked")
+                    package=$(jq -r --argjson i "$index" '.[$i].package' <<< "$checked")
+                    version=$(jq -r --argjson i "$index" '.[$i].version' <<< "$checked")
+
+                    local token='^[A-Za-z0-9_][A-Za-z0-9_-]*$' semver='^[0-9]+\.[0-9]+\.[0-9]+$'
+                    if ! [[ "$piece" =~ $token ]]; then
+                      problem "release $index: piece \"$piece\" must be letters, digits, _ and -"
+                      return
+                    fi
+                    if ! [[ "$version" =~ $semver ]]; then
+                      problem "$piece: version \"$version\" is not X.Y.Z"
+                      return
+                    fi
+
+                    local prefix=v
+                    if [ "$workspace" = true ]; then
+                      prefix="$piece-v"
+                    fi
+                    local tag_version=${tag#"$prefix"}
+                    if [ "$tag_version" = "$tag" ] || ! [[ "$tag_version" =~ $semver ]]; then
+                      problem "$piece: tag \"$tag\" is not ${prefix}X.Y.Z"
+                    elif [ "$tag_version" != "$version" ]; then
+                      problem "$piece: tag $tag is not for version $version"
+                    fi
+
+                    case "$kind" in
+                      cli | backend | web | library | flake | unknown) ;;
+                      *) problem "$piece: kind \"$kind\" is not cli, backend, web, library, flake or unknown" ;;
+                    esac
+                    if [ "$package" != "$piece" ] && [ "$package" != "typescript-$piece" ]; then
+                      problem "$piece: package \"$package\" is neither $piece nor typescript-$piece"
+                    fi
+
+                    # The note sits at `<piece dir>/release/vX.Y.Z/note.md`, or at
+                    # `release/vX.Y.Z/note.md` in a project that is not a workspace.
+                    local suffix="release/v$version/note.md" component='^[A-Za-z0-9_][A-Za-z0-9_.-]*$'
+                    local dir=${note%"$suffix"}
+                    local path_ok=true
+                    if [ "$dir" = "$note" ]; then
+                      path_ok=false
+                    elif [ "$workspace" = true ]; then
+                      if [ -z "$dir" ]; then
+                        path_ok=false
+                      else
+                        local part
+                        local -a parts
+                        IFS=/ read -r -a parts <<< "${dir%/}"
+                        for part in "${parts[@]}"; do
+                          [[ "$part" =~ $component ]] || path_ok=false
+                        done
+                      fi
+                    elif [ -n "$dir" ]; then
+                      path_ok=false
+                    fi
+                    if [ "$path_ok" = false ]; then
+                      problem "$piece: note \"$note\" is not <piece dir>/$suffix"
+                      return
+                    fi
+
+                    if [ ! -f "$note" ]; then
+                      problem "$piece: $note is missing at $TARGET_SHA (run np release draft)"
+                    else
+                      local section
+                      for section in "## Summary" "## Changes" "## Validation" "## Previous Release"; do
+                        if ! grep -qF -- "$section" "$note"; then
+                          problem "$piece: $note is missing section $section"
+                        fi
+                      done
+                      if grep -qF TODO "$note"; then
+                        problem "$piece: $note still has a TODO"
+                      fi
+                    fi
+
+                    if [ "$workspace" = true ]; then
+                      if [ -f "${dir}Cargo.toml" ]; then
+                        check_manifest "$piece" "${dir}Cargo.toml" "$version" "$piece"
+                      elif [ -f "${dir}package.json" ]; then
+                        check_manifest "$piece" "${dir}package.json" "$version" "$piece"
+                      elif [ -f "${dir}piece.toml" ]; then
+                        check_manifest "$piece" "${dir}piece.toml" "$version" "$piece"
+                      else
+                        problem "$piece: ${dir%/} has no Cargo.toml, package.json or piece.toml"
+                      fi
+                    else
+                      local manifest found=false
+                      for manifest in Cargo.toml package.json; do
+                        if [ -f "$manifest" ]; then
+                          found=true
+                          check_manifest "$piece" "$manifest" "$version"
+                        fi
+                      done
+                      if [ "$found" = false ]; then
+                        problem "$piece: the project has no Cargo.toml or package.json"
+                      fi
+                    fi
+                  }
+
+                  # Set the `targets` of release `index` in `planned`: every target its flake
+                  # lists under `legacyPackages.<system>.npRelease.<piece>.targets` for a system
+                  # in `runners`, with the runner that builds it. A CLI or a flake piece must have
+                  # that entry on every runner's system; any other piece has targets only on the
+                  # systems where it has one. An empty attrset adds nothing; a CLI still needs at
+                  # least one target in all, a flake piece may have none and publish its note
+                  # alone.
+                  plan_targets() {
+                    local index=$1 piece kind targets='[]' systems="" system runner present listed entries twice target
+                    piece=$(jq -r --argjson i "$index" '.[$i].piece' <<< "$checked")
+                    kind=$(jq -r --argjson i "$index" '.[$i].kind' <<< "$checked")
+
+                    # A piece that is not a token is a problem already, and never reaches nix.
+                    local token='^[A-Za-z0-9_][A-Za-z0-9_-]*$'
+                    if [[ "$piece" =~ $token ]]; then
+                      while read -r system runner; do
+                        systems+="${systems:+ or }$system"
+                        if ! present=$(nix eval --json ".#legacyPackages.$system" --apply "p: (p.npRelease or {}) ? \"$piece\""); then
+                          problem "$piece: the flake's $system legacyPackages do not evaluate"
+                          continue
+                        fi
+                        if [ "$present" != true ]; then
+                          case "$kind" in
+                            cli | flake) problem "$piece: the flake has no legacyPackages.$system.npRelease.$piece" ;;
+                          esac
+                          continue
+                        fi
+                        if ! listed=$(nix eval --json ".#legacyPackages.$system.npRelease.$piece.targets" --apply builtins.attrNames); then
+                          problem "$piece: the flake's $system release targets do not evaluate"
+                          continue
+                        fi
+                        if ! entries=$(jq -ce --arg system "$system" --arg runner "$runner" '
+                          if type == "array" and all(.[]; type == "string")
+                          then map({target: ., system: $system, runner: $runner})
+                          else error("malformed")
+                          end
+                        ' <<< "$listed" 2> /dev/null); then
+                          problem "$piece: the flake's $system release targets are not a list of names: $listed"
+                          continue
+                        fi
+                        targets=$(jq -c --argjson entries "$entries" '. + $entries' <<< "$targets")
+                      done <<< "$runners"
+
+                      if [ "$kind" = cli ] && [ "$(jq length <<< "$targets")" -eq 0 ]; then
+                        problem "$piece: the flake lists no release targets for $systems"
+                      fi
+                      # Each target is one job and one archive, so one system builds it.
+                      twice=$(jq -r 'group_by(.target)[] | select(length > 1) | .[0].target' <<< "$targets")
+                      while read -r target; do
+                        [ -n "$target" ] || continue
+                        problem "$piece: target $target is listed for more than one system"
+                      done <<< "$twice"
+                    fi
+
+                    planned=$(jq -c --argjson i "$index" --argjson targets "$targets" '.[$i].targets = $targets' <<< "$planned")
+                  }
+
+                  sha='^[0-9a-f]{40}([0-9a-f]{24})?$'
+                  if ! [[ "$TARGET_SHA" =~ $sha ]]; then
+                    echo "target_sha must be a full commit ID, not \"$TARGET_SHA\"" >&2
+                    exit 1
+                  fi
+                  head=$(git rev-parse HEAD)
+                  if [ "$head" != "$TARGET_SHA" ]; then
+                    echo "checked out $head, not $TARGET_SHA" >&2
+                    exit 1
+                  fi
+
+                  if ! checked=$(jq -ce '
+                    if type == "array" and length > 0 and
+                      all(.[]; type == "object" and
+                        all(.piece, .tag, .note, .kind, .package, .version; type == "string"))
+                    then map({piece, tag, note, kind, package, version})
+                    else error("malformed")
+                    end
+                  ' <<< "$RELEASES" 2> /dev/null); then
+                    echo "releases must be a non-empty JSON array of {piece, tag, note, kind, package, version}, not: $RELEASES" >&2
+                    exit 1
+                  fi
+
+                  if is_workspace; then
+                    workspace=true
+                  else
+                    workspace=false
+                  fi
+
+                  duplicates=$(jq -r 'group_by(.piece)[] | select(length > 1) | .[0].piece' <<< "$checked")
+                  while read -r piece; do
+                    [ -n "$piece" ] || continue
+                    problem "$piece: listed more than once"
+                  done <<< "$duplicates"
+                  if [ "$workspace" = false ] && [ "$(jq length <<< "$checked")" -gt 1 ]; then
+                    problem "a project that is not a workspace releases one piece, not $(jq length <<< "$checked")"
+                  fi
+
+                  planned=$checked
+                  count=$(jq length <<< "$checked")
+                  for ((index = 0; index < count; index++)); do
+                    check_release "$index"
+                    plan_targets "$index"
+                  done
+
+                  if [ -n "$problems" ]; then
+                    echo "the releases do not match $TARGET_SHA:" >&2
+                    printf '%s' "$problems" >&2
+                    exit 1
+                  fi
+
+                  jq -r '.[] | "\(.tag) (\(.kind), .#\(.package)): \(.note)"' <<< "$planned"
+                  echo "releases=$planned" >> "$GITHUB_OUTPUT"
+
+    piece:
+        name: ${{ matrix.tag }}
+        needs: plan
+        strategy:
+            fail-fast: false
+            matrix:
+                include: ${{ fromJSON(needs.plan.outputs.releases) }}
+        permissions:
+            contents: write
+        uses: ./.github/workflows/release-piece.yml
+        with:
+            piece: ${{ matrix.piece }}
+            tag: ${{ matrix.tag }}
+            note: ${{ matrix.note }}
+            kind: ${{ matrix.kind }}
+            package: ${{ matrix.package }}
+            targets: ${{ toJSON(matrix.targets) }}
+            target_sha: ${{ inputs.target_sha }}
