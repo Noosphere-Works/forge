@@ -3,7 +3,8 @@
 # `build` builds the piece's package, its gate (a Rust piece's tests run inside it). The
 # `binary` job runs once per release target `plan` found in the flake's
 # `legacyPackages.<system>.npRelease.<piece>.targets`, each on its system's runner and in
-# parallel with the others, and builds, checks and packs that target's portable binary.
+# parallel with the others, and builds, checks and packs that target's
+# `$out/bin` (one portable binary, or a relocatable client plus its libraries).
 # `publish`, the only job allowed to write, creates the GitHub release once every job it
 # needs passed; a piece with no targets publishes with no assets.
 name: Release piece
@@ -87,7 +88,7 @@ jobs:
                   # Build, check and pack one of a piece's release targets, a CLI's or a flake
                   # piece's alike: the one the flake lists as
                   # `legacyPackages.<system>.npRelease.<piece>.targets.<target>`, packed as
-                  # `<piece>-<target>.tar.gz`.
+                  # `<piece>-<target>.tar.gz` from every file in that target's `$out/bin`.
                   #
                   # Reads PIECE, TARGET, SYSTEM (the system this runner builds) and ASSETS (the
                   # directory the archive lands in). Whatever builds it, a Linux binary must be
@@ -112,7 +113,7 @@ jobs:
 
                   # Checked before the build, so an unknown target costs no build.
                   case "$TARGET" in
-                    linux-x86_64 | windows-x86_64 | darwin-aarch64) ;;
+                    linux-x86_64 | windows-x86_64 | darwin-aarch64 | darwin-x86_64) ;;
                     *) fail "$TARGET is not a target this workflow builds" ;;
                   esac
 
@@ -143,25 +144,42 @@ jobs:
                       binary="$PIECE.exe"
                       [ -f "$out/bin/$binary" ] || fail "$TARGET has no bin/$binary"
                       ;;
-                    darwin-aarch64)
+                    darwin-aarch64 | darwin-x86_64)
                       binary=$PIECE
                       bin="$out/bin/$binary"
                       [ -f "$bin" ] || fail "$TARGET has no bin/$binary"
-                      # The first line names the binary itself; the rest are the libraries it loads.
-                      links=$(otool -L "$bin")
-                      echo "$links"
-                      libraries=$(tail -n +2 <<< "$links")
-                      if grep -q /nix/store <<< "$libraries"; then
-                        fail "$TARGET/bin/$binary links a library from /nix/store"
+                      case "$TARGET" in
+                        darwin-aarch64)
+                          file "$bin" | grep -q arm64 || fail "$TARGET/bin/$binary is not arm64"
+                          ;;
+                        darwin-x86_64)
+                          file "$bin" | grep -q x86_64 || fail "$TARGET/bin/$binary is not x86_64"
+                          ;;
+                      esac
+                      # Every Mach-O under bin must be signed and free of
+                      # /nix/store links.
+                      while IFS= read -r -d '' mach; do
+                        file "$mach" | grep -q Mach-O || continue
+                        links=$(otool -L "$mach")
+                        echo "$links"
+                        libraries=$(tail -n +2 <<< "$links")
+                        rel=${mach#"$out/bin/"}
+                        if grep -q /nix/store <<< "$libraries"; then
+                          fail "$TARGET/bin/$rel links a library from /nix/store"
+                        fi
+                        codesign -v "$mach" || fail "$TARGET/bin/$rel is not validly signed"
+                      done < <(find "$out/bin" -type f -print0)
+                      # x86_64 on an Apple Silicon runner needs Rosetta.
+                      if [ "$TARGET" = darwin-aarch64 ] || arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+                        smoke "$bin" "$TARGET/bin/$binary"
                       fi
-                      codesign -v "$bin" || fail "$TARGET/bin/$binary is not validly signed"
-                      smoke "$bin" "$TARGET/bin/$binary"
                       # No AppleDouble `._` files in the archive.
                       export COPYFILE_DISABLE=1
                       ;;
                   esac
                   mkdir -p "$ASSETS"
-                  tar czf "$ASSETS/$PIECE-$TARGET.tar.gz" -C "$out/bin" "$binary"
+                  # The archive is every file in $out/bin.
+                  tar czf "$ASSETS/$PIECE-$TARGET.tar.gz" -C "$out/bin" .
                   ls -l "$ASSETS"
             - uses: actions/upload-artifact@v4
               with:
