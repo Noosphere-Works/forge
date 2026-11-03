@@ -14,3 +14,5 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v23
       - run: nix flake check -L
+      # Each system's release-target table instantiates, including Darwin's.
+      - run: nix eval --json '.#checks' --apply 'c: builtins.mapAttrs (s: v: v.rust-release-targets.drvPath) c'

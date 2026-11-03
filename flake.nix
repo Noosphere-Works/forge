@@ -69,6 +69,29 @@
             inherit workspace;
             crate = "tool";
           };
+          linuxAndApple = rust.cli {
+            inherit workspace;
+            crate = "tool";
+            targets = [
+              "linux-x86_64"
+              "darwin-aarch64"
+            ];
+          };
+          linuxAndAppleTargets =
+            {
+              aarch64-darwin = [ "darwin-aarch64" ];
+              aarch64-linux = [ ];
+              x86_64-linux = [ "linux-x86_64" ];
+            }
+            .${system};
+          unknownTarget = builtins.tryEval (
+            builtins.attrNames
+              (rust.cli {
+                inherit workspace;
+                crate = "tool";
+                targets = [ "riscv" ];
+              }).release.targets
+          );
           shared = rust.library {
             inherit workspace;
             crate = "shared";
@@ -85,7 +108,10 @@
           # The release targets of `tool` on each build system.
           targets =
             {
-              aarch64-darwin = [ "darwin-aarch64" ];
+              aarch64-darwin = [
+                "darwin-aarch64"
+                "darwin-x86_64"
+              ];
               aarch64-linux = [ ];
               x86_64-linux = [
                 "linux-x86_64"
@@ -232,6 +258,10 @@
             rust-release-targets =
               assert expect "rust-release-targets" (builtins.attrNames tool.release.targets) targets;
               assert drvPaths tool.release.targets;
+              assert expect "rust-release-targets subset" (builtins.attrNames linuxAndApple.release.targets)
+                linuxAndAppleTargets;
+              assert drvPaths linuxAndApple.release.targets;
+              assert expect "rust-release-targets unknown" unknownTarget.success false;
               evaluated "rust-release-targets";
 
             # The backend's bundle runs under bun and prints the greeting it

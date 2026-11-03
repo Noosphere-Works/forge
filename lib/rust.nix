@@ -94,6 +94,12 @@ in
         fenixPkgs.stable.toolchain
         fenixPkgs.targets."x86_64-unknown-linux-musl".stable.rust-std
       ];
+      # Same nixpkgs as the host: Apple Silicon cross-compiles to Intel Mac
+      # with the rust-std target, not a second pkgs.
+      appleX86-toolchain = fenixPkgs.combine [
+        fenixPkgs.stable.toolchain
+        fenixPkgs.targets."x86_64-apple-darwin".stable.rust-std
+      ];
     in
     {
       inherit
@@ -131,6 +137,16 @@ in
           doCheck = false;
         };
       };
+      appleX86 = {
+        toolchain = appleX86-toolchain;
+        craneLib = (inputs.crane.mkLib pkgs).overrideToolchain (_: appleX86-toolchain);
+        commonArgs = {
+          inherit src;
+          CARGO_BUILD_TARGET = "x86_64-apple-darwin";
+          strictDeps = true;
+          doCheck = false;
+        };
+      };
       defaultPackage = craneLib.buildPackage (
         commonArgs
         // {
@@ -139,10 +155,15 @@ in
       );
     };
 
-  # A command-line crate: its build, and the portable binaries released for
-  # it on the build system.
+  # A command-line crate: its build, and the portable binaries it ships
+  # on this build system. `targets` is the piece's set; omit it for every
+  # archive this system offers.
   cli =
-    { workspace, crate }:
+    {
+      workspace,
+      crate,
+      targets ? null,
+    }:
     let
       inherit (workspace)
         pkgs
@@ -150,6 +171,7 @@ in
         craneLib
         windows
         musl
+        appleX86
         ;
       args = pieceArgs workspace crate;
       # The cross targets build the crate's own dependencies (crane's default
@@ -157,11 +179,25 @@ in
       crossArgs = {
         inherit (args) pname version cargoExtraArgs;
       };
-    in
-    {
-      package = craneLib.buildPackage args;
-      # The portable binaries released for the CLI, per build system.
-      release.targets =
+      # A Darwin binary that runs without Nix: macOS's libiconv, then re-signed.
+      portableDarwin =
+        build:
+        build
+        // {
+          nativeBuildInputs = [ pkgs.darwin.autoSignDarwinBinariesHook ];
+          postFixup = ''
+            for library in $(otool -L "$out/bin/${crate}" | awk '/\/nix\/store\/.*\/libiconv/ { print $1 }'); do
+              install_name_tool -change "$library" /usr/lib/libiconv.2.dylib "$out/bin/${crate}"
+            done
+
+            if otool -L "$out/bin/${crate}" | tail -n +2 | grep -q /nix/store/; then
+              echo "$out/bin/${crate} still links a Nix store library:" >&2
+              otool -L "$out/bin/${crate}" >&2
+              exit 1
+            fi
+          '';
+        };
+      offered =
         if system == "x86_64-linux" then
           {
             linux-x86_64 = musl.craneLib.buildPackage (musl.commonArgs // crossArgs);
@@ -169,28 +205,29 @@ in
           }
         else if system == "aarch64-darwin" then
           {
-            darwin-aarch64 = craneLib.buildPackage (
-              args
-              // {
-                nativeBuildInputs = [ pkgs.darwin.autoSignDarwinBinariesHook ];
-                # Link macOS's own libiconv, not the store's, so the binary
-                # runs without Nix; the hook re-signs it after the change.
-                postFixup = ''
-                  for library in $(otool -L "$out/bin/${crate}" | awk '/\/nix\/store\/.*\/libiconv/ { print $1 }'); do
-                    install_name_tool -change "$library" /usr/lib/libiconv.2.dylib "$out/bin/${crate}"
-                  done
-
-                  if otool -L "$out/bin/${crate}" | tail -n +2 | grep -q /nix/store/; then
-                    echo "$out/bin/${crate} still links a Nix store library:" >&2
-                    otool -L "$out/bin/${crate}" >&2
-                    exit 1
-                  fi
-                '';
-              }
-            );
+            darwin-aarch64 = craneLib.buildPackage (portableDarwin args);
+            darwin-x86_64 = appleX86.craneLib.buildPackage (portableDarwin (appleX86.commonArgs // crossArgs));
           }
         else
           { };
+      known = {
+        darwin-aarch64 = null;
+        darwin-x86_64 = null;
+        linux-x86_64 = null;
+        windows-x86_64 = null;
+      };
+      unknown = builtins.filter (name: !(known ? ${name})) (if targets == null then [ ] else targets);
+      selected =
+        if unknown != [ ] then
+          throw "forge rust.cli: unknown release target: ${builtins.concatStringsSep ", " unknown}"
+        else if targets == null then
+          offered
+        else
+          pkgs.lib.getAttrs (builtins.filter (name: offered ? ${name}) targets) offered;
+    in
+    {
+      package = craneLib.buildPackage args;
+      release.targets = selected;
     };
 
   # A server crate: built, released by no target.
