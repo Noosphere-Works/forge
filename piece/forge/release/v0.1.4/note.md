@@ -1,7 +1,7 @@
 ## Summary
 
 Each GitHub release title is the piece tag (`<piece>-vX.Y.Z`, or `vX.Y.Z`
-outside a workspace).
+when it is the only releasable piece).
 
 ## Changes
 

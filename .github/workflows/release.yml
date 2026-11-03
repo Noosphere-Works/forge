@@ -171,8 +171,8 @@ jobs:
                   }
 
                   # How many listed members are releasable (own version other than 0.0.0).
-                  # Several share a tag namespace (`<piece>-vX.Y.Z`); one, or a root
-                  # package, is tagged `vX.Y.Z`.
+                  # Several share a tag namespace (`<piece>-vX.Y.Z`); the only
+                  # releasable piece is tagged `vX.Y.Z`.
                   releasable_piece_count() {
                     local count=0 manifest version
                     while read -r manifest; do
