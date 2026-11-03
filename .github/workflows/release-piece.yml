@@ -105,7 +105,10 @@ jobs:
                   # but not "cannot execute" (126, 127) or death by a signal.
                   smoke() {
                     local status=0
-                    (cd "$build" && env -i "$1" --help < /dev/null) || status=$?
+                    # Strip the builder environment so a packed binary cannot
+                    # lean on Nix. HOME stays: it is process identity, not a
+                    # library path.
+                    (cd "$build" && env -i HOME="${HOME:-/tmp}" "$1" --help < /dev/null) || status=$?
                     if [ "$status" -eq 126 ] || [ "$status" -eq 127 ] || [ "$status" -gt 128 ]; then
                       fail "$2 did not run (exit $status)"
                     fi
