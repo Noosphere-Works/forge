@@ -112,7 +112,7 @@ jobs:
 
                   # Whether the project is a workspace: its root Cargo.toml lists
                   # `[workspace] members`, its root package.json lists `workspaces`, or a
-                  # `piece/*/piece.toml` exists.
+                  # `piece/*/piece.toml` exists. One listed member is still a workspace.
                   is_workspace() {
                     local manifest
                     if [ -f Cargo.toml ] && awk '
@@ -135,6 +135,57 @@ jobs:
                       [ -f "$manifest" ] && return 0
                     done
                     return 1
+                  }
+
+                  # Manifests of every listed member: Cargo.toml `[workspace] members`,
+                  # package.json `workspaces`, and `piece/*/piece.toml`.
+                  listed_member_manifests() {
+                    if [ -f Cargo.toml ]; then
+                      awk '
+                        /^[ \t]*\[/ {
+                          header = $0
+                          sub(/#.*/, "", header)
+                          gsub(/[ \t]/, "", header)
+                          in_workspace = (header == "[workspace]")
+                          in_members = 0
+                          next
+                        }
+                        in_workspace && /^[ \t]*members[ \t]*=/ { in_members = 1 }
+                        in_members {
+                          line = $0
+                          while (match(line, /'\''[^'\'']+'\''|"[^"]+"/)) {
+                            print substr(line, RSTART + 1, RLENGTH - 2) "/Cargo.toml"
+                            line = substr(line, RSTART + RLENGTH)
+                          }
+                          if ($0 ~ /\]/) in_members = 0
+                        }
+                      ' Cargo.toml
+                    fi
+                    if [ -f package.json ]; then
+                      jq -r '(.workspaces // []) | if type == "array" then .[] else empty end | "\(.)/package.json"' package.json
+                    fi
+                    local manifest
+                    for manifest in piece/*/piece.toml; do
+                      [ -f "$manifest" ] && printf '%s\n' "$manifest"
+                    done
+                  }
+
+                  # How many listed members are releasable (own version other than 0.0.0).
+                  # Several share a tag namespace (`<piece>-vX.Y.Z`); one, or a root
+                  # package, is tagged `vX.Y.Z`.
+                  releasable_piece_count() {
+                    local count=0 manifest version
+                    while read -r manifest; do
+                      [ -n "$manifest" ] && [ -f "$manifest" ] || continue
+                      case "$manifest" in
+                        *.toml) version=$(toml_package_value "$manifest" version) ;;
+                        *) version=$(json_value "$manifest" version) ;;
+                      esac
+                      if [ -n "$version" ] && [ "$version" != "0.0.0" ]; then
+                        count=$((count + 1))
+                      fi
+                    done <<< "$(listed_member_manifests)"
+                    printf '%s\n' "$count"
                   }
 
                   # Check that `manifest` declares `version` (and `name`, when given).
@@ -178,7 +229,7 @@ jobs:
                     fi
 
                     local prefix=v
-                    if [ "$workspace" = true ]; then
+                    if [ "$releasable" -gt 1 ]; then
                       prefix="$piece-v"
                     fi
                     local tag_version=${tag#"$prefix"}
@@ -197,25 +248,19 @@ jobs:
                     fi
 
                     # The note sits at `<piece dir>/release/vX.Y.Z/note.md`, or at
-                    # `release/vX.Y.Z/note.md` in a project that is not a workspace.
+                    # `release/vX.Y.Z/note.md` when the piece is the root package.
                     local suffix="release/v$version/note.md" component='^[A-Za-z0-9_][A-Za-z0-9_.-]*$'
                     local dir=${note%"$suffix"}
                     local path_ok=true
                     if [ "$dir" = "$note" ]; then
                       path_ok=false
-                    elif [ "$workspace" = true ]; then
-                      if [ -z "$dir" ]; then
-                        path_ok=false
-                      else
-                        local part
-                        local -a parts
-                        IFS=/ read -r -a parts <<< "${dir%/}"
-                        for part in "${parts[@]}"; do
-                          [[ "$part" =~ $component ]] || path_ok=false
-                        done
-                      fi
                     elif [ -n "$dir" ]; then
-                      path_ok=false
+                      local part
+                      local -a parts
+                      IFS=/ read -r -a parts <<< "${dir%/}"
+                      for part in "${parts[@]}"; do
+                        [[ "$part" =~ $component ]] || path_ok=false
+                      done
                     fi
                     if [ "$path_ok" = false ]; then
                       problem "$piece: note \"$note\" is not <piece dir>/$suffix"
@@ -236,7 +281,7 @@ jobs:
                       fi
                     fi
 
-                    if [ "$workspace" = true ]; then
+                    if [ -n "$dir" ]; then
                       if [ -f "${dir}Cargo.toml" ]; then
                         check_manifest "$piece" "${dir}Cargo.toml" "$version" "$piece"
                       elif [ -f "${dir}package.json" ]; then
@@ -345,6 +390,7 @@ jobs:
                   else
                     workspace=false
                   fi
+                  releasable=$(releasable_piece_count)
 
                   duplicates=$(jq -r 'group_by(.piece)[] | select(length > 1) | .[0].piece' <<< "$checked")
                   while read -r piece; do

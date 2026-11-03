@@ -18,7 +18,7 @@ CI is Ubuntu. After `nix flake check` it evaluates `checks.<system>.rust-release
 
 ## Versions
 
-The releasable piece is `piece/forge/piece.toml`. `np release draft <level>` bumps that version and writes `piece/forge/release/vX.Y.Z/note.md`. The Git tag is `vX.Y.Z`. A release publishes that note; it ships no archives. np pins the tag in the input it emits. A project's `.github/workflows/release.yml` calls this repository's `release.yml` at that same tag (`uses: noosphere-works/forge/.github/workflows/release.yml@<tag>`). `release-piece.yml` stays here: a relative `uses:` inside the called workflow resolves to this repository at that ref. `actions/checkout` in those jobs checks out the calling project.
+The releasable piece is `piece/forge/piece.toml`. `np release draft forge <level>` bumps that version and writes `piece/forge/release/vX.Y.Z/note.md`. The Git tag is `vX.Y.Z`. A release publishes that note; it ships no archives. np pins the tag in the input it emits. A project's `.github/workflows/release.yml` calls this repository's `release.yml` at that same tag (`uses: noosphere-works/forge/.github/workflows/release.yml@<tag>`). `release-piece.yml` stays here: a relative `uses:` inside the called workflow resolves to this repository at that ref. `actions/checkout` in those jobs checks out the calling project.
 
 ## Image workflow
 
