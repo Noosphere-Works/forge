@@ -14,7 +14,7 @@ forge's product is `flake.lib` (`lib/`). The root `flake.nix` is the check harne
 
 `nix flake check` builds `fixture/` through the recipes on the runner's system: the CLI runs, the libraries build, the four Rust checks pass with a dev shell that provides git, and the backend's bundle prints its greeting. The release targets, the TypeScript lint checks, a web's backend URLs, the tools and (on `x86_64-linux`) the images are evaluated, not built.
 
-CI is Ubuntu. After `nix flake check` it evaluates `checks.<system>.rust-release-targets` for every system the flake names, so the Linux table (`linux-x86_64`, `windows-x86_64`) and the Darwin table (`darwin-aarch64`, `darwin-x86_64`) both instantiate. Packing and smoking those archives is `np release` on a consumer. `x86_64-darwin` is not a system: nixpkgs unstable no longer instantiates it; the Intel Mac archive is `darwin-x86_64` on Apple Silicon.
+CI is Ubuntu. After `nix flake check` it evaluates `checks.<system>.rust-release-targets` for every system the flake names, so the Linux table (`linux-x86_64`, `windows-x86_64`) and the Darwin table (`darwin-aarch64`, `darwin-x86_64`) both instantiate. Packing those archives is `np release` on a consumer: the job inspects ISA, static linking, `/nix/store` links and Darwin signatures, and does not run the packed binary. `x86_64-darwin` is not a system: nixpkgs unstable no longer instantiates it; the Intel Mac archive is `darwin-x86_64` on Apple Silicon.
 
 ## Versions
 

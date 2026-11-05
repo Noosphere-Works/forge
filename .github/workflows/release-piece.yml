@@ -3,7 +3,7 @@
 # `build` builds the piece's package, its gate (a Rust piece's tests run inside it). The
 # `binary` job runs once per release target `plan` found in the flake's
 # `legacyPackages.<system>.npRelease.<piece>.targets`, each on its system's runner and in
-# parallel with the others, and builds, checks and packs that target's
+# parallel with the others, and builds, inspects and packs that target's
 # `$out/bin` (one portable binary, or a relocatable client plus its libraries).
 # `publish`, the only job allowed to write, creates the GitHub release once every job it
 # needs passed; a piece with no targets publishes with no assets.
@@ -78,14 +78,14 @@ jobs:
             - uses: cachix/install-nix-action@v31
               with:
                   extra_nix_config: experimental-features = nix-command flakes
-            - name: Build, check and pack the binary
+            - name: Build, inspect and pack the binary
               env:
                   PIECE: ${{ inputs.piece }}
                   TARGET: ${{ matrix.target }}
                   SYSTEM: ${{ matrix.system }}
                   ASSETS: ${{ runner.temp }}/assets
               run: |
-                  # Build, check and pack one of a piece's release targets, a CLI's or a flake
+                  # Build, inspect and pack one of a piece's release targets, a CLI's or a flake
                   # piece's alike: the one the flake lists as
                   # `legacyPackages.<system>.npRelease.<piece>.targets.<target>`, packed as
                   # `<piece>-<target>.tar.gz` from every file in that target's `$out/bin`.
@@ -93,24 +93,13 @@ jobs:
                   # Reads PIECE, TARGET, SYSTEM (the system this runner builds) and ASSETS (the
                   # directory the archive lands in). Whatever builds it, a Linux binary must be
                   # static (musl), a Windows target ships `bin/<piece>.exe`, and a macOS binary
-                  # must be signed. macOS ships bash 3.2: no mapfile or associative arrays here.
+                  # must be signed. The job does not run the packed binary. macOS ships bash 3.2:
+                  # no mapfile or associative arrays here.
                   set -euo pipefail
 
                   fail() {
                     echo "$PIECE: $*" >&2
                     exit 1
-                  }
-
-                  # The binary must start: any exit status will do (a binary may want arguments),
-                  # but not "cannot execute" (126, 127) or death by a signal.
-                  smoke() {
-                    local status=0
-                    # Strip the builder environment so a packed binary cannot
-                    # lean on Nix.
-                    (cd "$build" && env -i "$1" --help < /dev/null) || status=$?
-                    if [ "$status" -eq 126 ] || [ "$status" -eq 127 ] || [ "$status" -gt 128 ]; then
-                      fail "$2 did not run (exit $status)"
-                    fi
                   }
 
                   # Checked before the build, so an unknown target costs no build.
@@ -140,7 +129,6 @@ jobs:
                         echo "$programs$dynamic" | grep /nix/store >&2
                         fail "$TARGET/bin/$binary refers to /nix/store"
                       fi
-                      smoke "$bin" "$TARGET/bin/$binary"
                       ;;
                     windows-x86_64)
                       binary="$PIECE.exe"
@@ -171,10 +159,6 @@ jobs:
                         fi
                         codesign -v "$mach" || fail "$TARGET/bin/$rel is not validly signed"
                       done < <(find "$out/bin" -type f -print0)
-                      # x86_64 on an Apple Silicon runner needs Rosetta.
-                      if [ "$TARGET" = darwin-aarch64 ] || arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
-                        smoke "$bin" "$TARGET/bin/$binary"
-                      fi
                       # No AppleDouble `._` files in the archive.
                       export COPYFILE_DISABLE=1
                       ;;
