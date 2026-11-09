@@ -8,7 +8,11 @@
 # it. `plan` checks that list against the commit and finds each piece's
 # release targets; then each piece runs `release-piece.yml` in this
 # repository at this ref. A piece with no targets publishes its note alone.
-# It passes on no secret: the pieces publish with the run's own token.
+# One secret is passed on, and only to the jobs that run Nix on the project:
+# `NP_GIT_TOKEN`, optional, a fine-grained read-only GitHub token. `plan` (whose
+# `nix eval` can fetch a cargo git dependency through crane) and the piece's `build`
+# and `binary` jobs use it to read private github.com repositories; `publish` never
+# receives it and publishes with the run's own token. Without it, nothing changes.
 name: Release
 
 on:
@@ -34,6 +38,10 @@ on:
                 description: The pending releases at the commit, as JSON (written by np release)
                 required: true
                 type: string
+        secrets:
+            NP_GIT_TOKEN:
+                description: A fine-grained, read-only GitHub token (Contents) for the private github.com repositories the flake fetches, such as a cargo git dependency
+                required: false
 
 run-name: release ${{ inputs.title || inputs.target_sha }}
 
@@ -62,16 +70,30 @@ jobs:
               env:
                   TARGET_SHA: ${{ inputs.target_sha }}
                   RELEASES: ${{ inputs.releases }}
+                  NP_GIT_TOKEN: ${{ secrets.NP_GIT_TOKEN }}
               run: |
                   # Check every release `np release` dispatched against the commit it pinned, find
                   # each piece's release targets, and hand the checked list to the piece jobs.
                   #
-                  # Reads TARGET_SHA (the commit to release) and RELEASES (a JSON array of
-                  # {piece, tag, note, kind, package, version}); writes `releases=<json>` to
-                  # GITHUB_OUTPUT, each release with `targets` added: a JSON array of
-                  # {target, system, runner}, empty for a piece whose flake lists none. Every
-                  # problem is reported, each naming its piece, before the run fails.
+                  # Reads TARGET_SHA (the commit to release), RELEASES (a JSON array of
+                  # {piece, tag, note, kind, package, version}) and NP_GIT_TOKEN; writes
+                  # `releases=<json>` to GITHUB_OUTPUT, each release with `targets` added: a
+                  # JSON array of {target, system, runner}, empty for a piece whose flake lists
+                  # none. Every problem is reported, each naming its piece, before the run fails.
                   set -euo pipefail
+
+                  # NP_GIT_TOKEN, when set, reads the private github.com repositories the
+                  # flake fetches, for this step only: git's url rewrite carries it to git
+                  # fetches (crane's `builtins.fetchGit` of a cargo git dependency,
+                  # `git+https` inputs), Nix's `access-tokens` to `github:` inputs. Unset,
+                  # Nix and git run as configured.
+                  if [ -n "${NP_GIT_TOKEN:-}" ]; then
+                    export NIX_CONFIG="access-tokens = github.com=$NP_GIT_TOKEN"
+                    export GIT_CONFIG_COUNT=1
+                    export GIT_CONFIG_KEY_0="url.https://x-access-token:$NP_GIT_TOKEN@github.com/.insteadOf"
+                    export GIT_CONFIG_VALUE_0=https://github.com/
+                  fi
+                  unset NP_GIT_TOKEN
 
                   # The systems whose release targets a runner builds, each `<system> <runner>`.
                   # The flake's other systems are not released.
@@ -439,3 +461,5 @@ jobs:
             package: ${{ matrix.package }}
             targets: ${{ toJSON(matrix.targets) }}
             target_sha: ${{ inputs.target_sha }}
+        secrets:
+            NP_GIT_TOKEN: ${{ secrets.NP_GIT_TOKEN }}

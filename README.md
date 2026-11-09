@@ -199,6 +199,10 @@ jobs:
     secrets: inherit
 ```
 
+`secrets: inherit` hands forge one optional secret, `NP_GIT_TOKEN`. Set it when the flake depends on a private github.com repository, such as a cargo git dependency in `Cargo.lock` (crane fetches it with `builtins.fetchGit` while Nix evaluates the flake) or a private `github:` or `git+https` flake input. Make it a fine-grained, read-only token: the repository access lists those private repositories, and its only permission is Contents: read. Store it as an Actions secret on the project's repository, or as an organization secret the repository can read.
+
+forge passes it to the jobs that run Nix on the project, and to no other: `plan` (`nix eval`), and the piece's `build` and `binary` (`nix build`). Each of those steps sets it, for that step only, as git's `url.https://x-access-token:<token>@github.com/.insteadOf https://github.com/` (through `GIT_CONFIG_COUNT`, which Nix's git fetcher honours) and as Nix's `access-tokens = github.com=<token>` (through `NIX_CONFIG`, for `github:` inputs; it takes the place of the run's own token there). Nix evaluates, and so fetches, in the job's own process, not in the daemon, so the step's environment carries it to both `nix eval` and `nix build`. `publish` never receives it. Without it, the jobs run exactly as before.
+
 To change a recipe, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License

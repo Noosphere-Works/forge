@@ -7,6 +7,10 @@
 # `$out/bin` (one portable binary, or a relocatable client plus its libraries).
 # `publish`, the only job allowed to write, creates the GitHub release once every job it
 # needs passed; a piece with no targets publishes with no assets.
+#
+# `build` and `binary` read the optional `NP_GIT_TOKEN` (see `release.yml`) so Nix and git
+# can fetch the private github.com repositories the flake depends on. `publish` does not
+# receive it.
 name: Release piece
 
 on:
@@ -40,6 +44,10 @@ on:
                 description: The commit to release
                 required: true
                 type: string
+        secrets:
+            NP_GIT_TOKEN:
+                description: A fine-grained, read-only GitHub token (Contents) for the private github.com repositories the flake fetches, such as a cargo git dependency
+                required: false
 
 permissions:
     contents: read
@@ -58,8 +66,23 @@ jobs:
             - name: Build the package
               env:
                   PACKAGE: ${{ inputs.package }}
+                  NP_GIT_TOKEN: ${{ secrets.NP_GIT_TOKEN }}
               run: |
                   set -euo pipefail
+
+                  # NP_GIT_TOKEN, when set, reads the private github.com repositories the
+                  # flake fetches, for this step only: git's url rewrite carries it to git
+                  # fetches (crane's `builtins.fetchGit` of a cargo git dependency,
+                  # `git+https` inputs), Nix's `access-tokens` to `github:` inputs. Unset,
+                  # Nix and git run as configured.
+                  if [ -n "${NP_GIT_TOKEN:-}" ]; then
+                    export NIX_CONFIG="access-tokens = github.com=$NP_GIT_TOKEN"
+                    export GIT_CONFIG_COUNT=1
+                    export GIT_CONFIG_KEY_0="url.https://x-access-token:$NP_GIT_TOKEN@github.com/.insteadOf"
+                    export GIT_CONFIG_VALUE_0=https://github.com/
+                  fi
+                  unset NP_GIT_TOKEN
+
                   nix build ".#$PACKAGE" --print-build-logs
 
     binary:
@@ -84,18 +107,32 @@ jobs:
                   TARGET: ${{ matrix.target }}
                   SYSTEM: ${{ matrix.system }}
                   ASSETS: ${{ runner.temp }}/assets
+                  NP_GIT_TOKEN: ${{ secrets.NP_GIT_TOKEN }}
               run: |
                   # Build, inspect and pack one of a piece's release targets, a CLI's or a flake
                   # piece's alike: the one the flake lists as
                   # `legacyPackages.<system>.npRelease.<piece>.targets.<target>`, packed as
                   # `<piece>-<target>.tar.gz` from every file in that target's `$out/bin`.
                   #
-                  # Reads PIECE, TARGET, SYSTEM (the system this runner builds) and ASSETS (the
-                  # directory the archive lands in). Whatever builds it, a Linux binary must be
-                  # static (musl), a Windows target ships `bin/<piece>.exe`, and a macOS binary
-                  # must be signed. The job does not run the packed binary. macOS ships bash 3.2:
-                  # no mapfile or associative arrays here.
+                  # Reads PIECE, TARGET, SYSTEM (the system this runner builds), ASSETS (the
+                  # directory the archive lands in) and NP_GIT_TOKEN. Whatever builds it, a Linux
+                  # binary must be static (musl), a Windows target ships `bin/<piece>.exe`, and a
+                  # macOS binary must be signed. The job does not run the packed binary. macOS
+                  # ships bash 3.2: no mapfile or associative arrays here.
                   set -euo pipefail
+
+                  # NP_GIT_TOKEN, when set, reads the private github.com repositories the
+                  # flake fetches, for this step only: git's url rewrite carries it to git
+                  # fetches (crane's `builtins.fetchGit` of a cargo git dependency,
+                  # `git+https` inputs), Nix's `access-tokens` to `github:` inputs. Unset,
+                  # Nix and git run as configured.
+                  if [ -n "${NP_GIT_TOKEN:-}" ]; then
+                    export NIX_CONFIG="access-tokens = github.com=$NP_GIT_TOKEN"
+                    export GIT_CONFIG_COUNT=1
+                    export GIT_CONFIG_KEY_0="url.https://x-access-token:$NP_GIT_TOKEN@github.com/.insteadOf"
+                    export GIT_CONFIG_VALUE_0=https://github.com/
+                  fi
+                  unset NP_GIT_TOKEN
 
                   fail() {
                     echo "$PIECE: $*" >&2
