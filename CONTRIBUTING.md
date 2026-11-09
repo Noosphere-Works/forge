@@ -5,14 +5,14 @@ forge's product is `flake.lib` (`lib/`). The root `flake.nix` is the check harne
 ## Layout
 
 - `lib/` — the recipes a project calls as `forge.lib`.
-- `fixture/` — a Cargo workspace (`crate/tool`, a CLI whose test runs `git --version`; `crate/shared`, a library) and a bun workspace (`package/api`, a backend; `package/shared`, a library).
+- `fixture/` — a Cargo workspace (`crate/tool`, a CLI whose test runs `git --version`; `crate/declared`, a CLI that declares `linux-x86_64` and `darwin-aarch64` under `[package.metadata.np] targets` in its `Cargo.toml`; `crate/shared`, a library) and a bun workspace (`package/api`, a backend; `package/shared`, a library). `fixture/invalid/crate/` holds manifests outside the workspace whose declarations `lib.rust.cli` refuses.
 - `piece/forge/` — the releasable piece: `piece.toml`, and notes under `release/`.
 - `flake.nix` — `checks` for each system in `systems`, plus `packages.forge` and empty `legacyPackages.npRelease.forge.targets` so `np release` can publish the note. `nixpkgs` here serves the checks, the formatter and fenix; a project passes its own `pkgs`.
 - `.github/workflows/` — `check.yml` for the harness; `release.yml` and `release-piece.yml` are the reusable release workflows a project calls at the forge tag it pins. This repository dispatches `release.yml` locally.
 
 ## Checks
 
-`nix flake check` builds `fixture/` through the recipes on the runner's system: the CLI runs, the libraries build, the four Rust checks pass with a dev shell that provides git, and the backend's bundle prints its greeting. The release targets, the TypeScript lint checks, a web's backend URLs, the tools and (on `x86_64-linux`) the images are evaluated, not built.
+`nix flake check` builds `fixture/` through the recipes on the runner's system: the CLI runs, the libraries build, the four Rust checks pass with a dev shell that provides git, and the backend's bundle prints its greeting. The release targets (every target for `tool`, the manifest's for `declared`, an explicit `targets` argument over the manifest's, and the refused declarations), the TypeScript lint checks, a web's backend URLs, the tools and (on `x86_64-linux`) the images are evaluated, not built.
 
 CI is Ubuntu. After `nix flake check` it evaluates `checks.<system>.rust-release-targets` for every system the flake names, so the Linux table (`linux-x86_64`, `windows-x86_64`) and the Darwin table (`darwin-aarch64`, `darwin-x86_64`) both instantiate. Packing those archives is `np release` on a consumer: the job inspects ISA, static linking, `/nix/store` links and Darwin signatures, and does not run the packed binary. `x86_64-darwin` is not a system: nixpkgs unstable no longer instantiates it; the Intel Mac archive is `darwin-x86_64` on Apple Silicon.
 

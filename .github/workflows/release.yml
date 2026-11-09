@@ -20,6 +20,10 @@ on:
             releases:
                 description: The pending releases at the commit, as JSON (written by np release)
                 required: true
+            title:
+                description: "The run title np renders after `release`: each piece and version, and the short commit"
+                required: false
+                default: ''
     workflow_call:
         inputs:
             target_sha:
@@ -31,7 +35,7 @@ on:
                 required: true
                 type: string
 
-run-name: release ${{ inputs.target_sha }}
+run-name: release ${{ inputs.title || inputs.target_sha }}
 
 permissions:
     contents: read

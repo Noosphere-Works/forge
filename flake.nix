@@ -60,9 +60,10 @@
 
           drvPaths = attrs: builtins.all (drv: builtins.isString drv.drvPath) (builtins.attrValues attrs);
 
-          # `fixture/`, a Cargo workspace (`crate/tool`, a CLI; `crate/shared`,
-          # a library) and a bun workspace (`package/api`, a backend;
-          # `package/shared`, a library).
+          # `fixture/`, a Cargo workspace (`crate/tool`, a CLI; `crate/declared`,
+          # a CLI that declares its release targets; `crate/shared`, a library)
+          # and a bun workspace (`package/api`, a backend; `package/shared`, a
+          # library).
           root = ./fixture;
 
           workspace = rust.workspace { inherit pkgs system root; };
@@ -85,6 +86,39 @@
               x86_64-linux = [ "linux-x86_64" ];
             }
             .${system};
+          # `crate/declared` declares `linux-x86_64` and `darwin-aarch64` in
+          # its `[package.metadata.np] targets`; a `targets` argument wins.
+          declared = rust.cli {
+            inherit workspace;
+            crate = "declared";
+          };
+          declaredOverridden = rust.cli {
+            inherit workspace;
+            crate = "declared";
+            targets = [
+              "darwin-x86_64"
+              "windows-x86_64"
+            ];
+          };
+          declaredOverriddenTargets =
+            {
+              aarch64-darwin = [ "darwin-x86_64" ];
+              aarch64-linux = [ ];
+              x86_64-linux = [ "windows-x86_64" ];
+            }
+            .${system};
+          # `fixture/invalid/crate/<crate>`: a declaration `rust.cli` refuses.
+          refused =
+            crate:
+            builtins.tryEval (
+              builtins.attrNames
+                (rust.cli {
+                  workspace = workspace // {
+                    root = root + "/invalid";
+                  };
+                  inherit crate;
+                }).release.targets
+            );
           unknownTarget = builtins.tryEval (
             builtins.attrNames
               (rust.cli {
@@ -255,7 +289,9 @@
               ];
               pkgs.linkFarm "rust-checks" rustChecks;
 
-            # Eval-only: `tool`'s release targets for this system.
+            # Eval-only: the release targets for this system of `tool`, of
+            # `crate/declared` from its manifest or an argument, and the
+            # names and declarations `rust.cli` refuses.
             rust-release-targets =
               assert expect "rust-release-targets" (builtins.attrNames tool.release.targets) targets;
               assert drvPaths tool.release.targets;
@@ -263,6 +299,16 @@
                 linuxAndAppleTargets;
               assert drvPaths linuxAndApple.release.targets;
               assert expect "rust-release-targets unknown" unknownTarget.success false;
+              assert expect "rust-release-targets declared" (builtins.attrNames declared.release.targets)
+                linuxAndAppleTargets;
+              assert drvPaths declared.release.targets;
+              assert expect "rust-release-targets declared overridden"
+                (builtins.attrNames declaredOverridden.release.targets)
+                declaredOverriddenTargets;
+              assert drvPaths declaredOverridden.release.targets;
+              assert expect "rust-release-targets declared empty" (refused "empty").success false;
+              assert expect "rust-release-targets declared scalar" (refused "scalar").success false;
+              assert expect "rust-release-targets declared unknown" (refused "strange").success false;
               evaluated "rust-release-targets";
 
             # The backend's bundle runs under bun and prints the greeting it

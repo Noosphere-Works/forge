@@ -3,15 +3,24 @@
 # with the crate's name as an argument.
 { inputs }:
 let
+  # A crate's `Cargo.toml`: its path in the workspace, and its contents read
+  # at evaluation time.
+  crateManifest =
+    workspace: crate:
+    let
+      path = "${workspace.crateDir}/${crate}/Cargo.toml";
+    in
+    {
+      inherit path;
+      toml = builtins.fromTOML (builtins.readFile (workspace.root + "/${path}"));
+    };
+
   # A crate's own build arguments: `--package <crate>` from the whole
   # workspace source with the workspace's shared dependency artifacts.
   pieceArgs =
-    workspace: crate:
+    workspace: crate: manifest:
     let
-      manifest = builtins.fromTOML (
-        builtins.readFile (workspace.root + "/${workspace.crateDir}/${crate}/Cargo.toml")
-      );
-      version = manifest.package.version or null;
+      version = manifest.toml.package.version or null;
     in
     workspace.commonArgs
     // {
@@ -156,8 +165,9 @@ in
     };
 
   # A command-line crate: its build, and the portable binaries it ships
-  # on this build system. `targets` is the piece's set; omit it for every
-  # archive this system offers.
+  # on this build system. `targets` is the piece's set; without it, the
+  # crate's own `[package.metadata.np] targets` in its `Cargo.toml`; with
+  # neither, every archive this system offers.
   cli =
     {
       workspace,
@@ -173,7 +183,8 @@ in
         musl
         appleX86
         ;
-      args = pieceArgs workspace crate;
+      manifest = crateManifest workspace crate;
+      args = pieceArgs workspace crate manifest;
       # The cross targets build the crate's own dependencies (crane's default
       # `cargoArtifacts`), so no other crate's dependencies need to cross.
       crossArgs = {
@@ -216,14 +227,28 @@ in
         linux-x86_64 = null;
         windows-x86_64 = null;
       };
-      unknown = builtins.filter (name: !(known ? ${name})) (if targets == null then [ ] else targets);
+      valid = builtins.concatStringsSep ", " (builtins.attrNames known);
+      declared = manifest.toml.package.metadata.np.targets or null;
+      # The argument wins over the manifest's declaration.
+      chosen =
+        if targets != null then
+          targets
+        else if declared == null then
+          null
+        else if !(builtins.isList declared && builtins.all builtins.isString declared) then
+          throw "forge rust.cli: `[package.metadata.np] targets` in ${manifest.path} must be a list of target names from: ${valid}"
+        else if declared == [ ] then
+          throw "forge rust.cli: `[package.metadata.np] targets` in ${manifest.path} is empty, so the CLI would release nothing: list one or more of ${valid}, or remove it to release every target"
+        else
+          declared;
+      unknown = builtins.filter (name: !(known ? ${name})) (if chosen == null then [ ] else chosen);
       selected =
         if unknown != [ ] then
           throw "forge rust.cli: unknown release target: ${builtins.concatStringsSep ", " unknown}"
-        else if targets == null then
+        else if chosen == null then
           offered
         else
-          pkgs.lib.getAttrs (builtins.filter (name: offered ? ${name}) targets) offered;
+          pkgs.lib.getAttrs (builtins.filter (name: offered ? ${name}) chosen) offered;
     in
     {
       package = craneLib.buildPackage args;
@@ -234,7 +259,9 @@ in
   backend =
     { workspace, crate }:
     {
-      package = workspace.craneLib.buildPackage (pieceArgs workspace crate);
+      package = workspace.craneLib.buildPackage (
+        pieceArgs workspace crate (crateManifest workspace crate)
+      );
     };
 
   # A library crate: built and tested, with nothing to install or release.
@@ -242,7 +269,7 @@ in
     { workspace, crate }:
     {
       package = workspace.craneLib.buildPackage (
-        pieceArgs workspace crate
+        pieceArgs workspace crate (crateManifest workspace crate)
         // {
           # A library has nothing to install: the build compiles it and leaves
           # `$out` empty.
