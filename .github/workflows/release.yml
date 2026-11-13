@@ -58,6 +58,11 @@ on:
                 required: false
                 type: string
                 default: ''
+            free_runner_disk:
+                description: "`true` to delete the Linux runner's preinstalled toolchains before building, for a large build on a runner with little free disk (GitHub's ~14 GB). Anything else: no"
+                required: false
+                type: string
+                default: ''
         secrets:
             NP_GIT_TOKEN:
                 description: A fine-grained, read-only GitHub token (Contents) for the private github.com repositories the flake fetches, such as a cargo git dependency
@@ -495,6 +500,7 @@ jobs:
             nix_cache: ${{ inputs.nix_cache }}
             nix_cache_public_key: ${{ inputs.nix_cache_public_key }}
             linux_runner: ${{ inputs.linux_runner }}
+            free_runner_disk: ${{ inputs.free_runner_disk }}
         secrets:
             NP_GIT_TOKEN: ${{ secrets.NP_GIT_TOKEN }}
             NP_NIX_CACHE_ACCESS_KEY_ID: ${{ secrets.NP_NIX_CACHE_ACCESS_KEY_ID }}

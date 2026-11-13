@@ -220,8 +220,9 @@ A project can also give the release and image jobs its own binary cache and runn
 | `NP_NIX_CACHE_ACCESS_KEY_ID`, `NP_NIX_CACHE_SECRET_ACCESS_KEY` | secrets | A token that may read and write that bucket only |
 | `NP_NIX_CACHE_SIGNING_KEY` | secret | The secret key every uploaded path is signed with (`nix key generate-secret --key-name <name>`) |
 | `NP_LINUX_RUNNER`, `NP_MACOS_RUNNER` | variables | Runner labels, e.g. `blacksmith-8vcpu-ubuntu-2404`; empty means `ubuntu-latest` and `macos-15` |
+| `NP_FREE_RUNNER_DISK` | variable | `true` to delete the Linux runner's preinstalled toolchains first, for a large build on GitHub's runner (about 14 GB free); otherwise skipped |
 
-np's emitted `release.yml` passes the variables to `release.yml` (`nix_cache`, `nix_cache_public_key`, `linux_runner`, `macos_runner`) with `secrets: inherit`, and its `image.yml` reads them itself. With the cache set, the jobs read it; with the two token secrets too, the Nix daemon reads it with that token; with the signing key as well, a post-build hook signs and uploads every path a job builds, the compiled dependencies included, compressed with zstd. A runner label starting with `blacksmith-` skips freeing runner disk, since those runners have room. Set the variables and secrets at the organisation to share one cache across its repositories; Nix never deletes from the bucket, so give it an expiry rule.
+np's emitted `release.yml` passes the variables to `release.yml` (`nix_cache`, `nix_cache_public_key`, `linux_runner`, `macos_runner`, `free_runner_disk`) with `secrets: inherit`, and its `image.yml` reads them itself. With the cache set, the jobs read it; with the two token secrets too, the Nix daemon reads it with that token; with the signing key as well, a post-build hook signs and uploads every path a job builds, the compiled dependencies included, compressed with zstd. Set the variables and secrets at the organisation to share one cache across its repositories; Nix never deletes from the bucket, so give it an expiry rule.
 
 ## License
 

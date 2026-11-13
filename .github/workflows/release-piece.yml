@@ -59,6 +59,11 @@ on:
                 required: false
                 type: string
                 default: ''
+            free_runner_disk:
+                description: As in `release.yml`
+                required: false
+                type: string
+                default: ''
         secrets:
             NP_GIT_TOKEN:
                 description: A fine-grained, read-only GitHub token (Contents) for the private github.com repositories the flake fetches, such as a cargo git dependency
@@ -80,11 +85,11 @@ jobs:
     build:
         runs-on: ${{ inputs.linux_runner || 'ubuntu-latest' }}
         steps:
-            # crane's dependency build for a large crate tree can exceed the ~14 GB the
-            # stock Linux runner has free. These preinstalled toolchains are ones no forge
-            # job uses; removing them before Nix is installed frees the disk.
+            # Opt-in (`free_runner_disk: 'true'`): crane's dependency build for a large
+            # crate tree can exceed the ~14 GB GitHub's stock Linux runner has free.
+            # These preinstalled toolchains are ones no forge job uses.
             - name: Free runner disk
-              if: runner.os == 'Linux' && !startsWith(inputs.linux_runner, 'blacksmith-')
+              if: runner.os == 'Linux' && inputs.free_runner_disk == 'true'
               shell: bash
               run: |
                   set -euo pipefail
@@ -195,11 +200,11 @@ jobs:
                 include: ${{ fromJSON(inputs.targets) }}
         runs-on: ${{ matrix.runner }}
         steps:
-            # crane's dependency build for a large crate tree can exceed the ~14 GB the
-            # stock Linux runner has free. These preinstalled toolchains are ones no forge
-            # job uses; removing them before Nix is installed frees the disk.
+            # Opt-in (`free_runner_disk: 'true'`): crane's dependency build for a large
+            # crate tree can exceed the ~14 GB GitHub's stock Linux runner has free.
+            # These preinstalled toolchains are ones no forge job uses.
             - name: Free runner disk
-              if: runner.os == 'Linux' && !startsWith(matrix.runner, 'blacksmith-')
+              if: runner.os == 'Linux' && inputs.free_runner_disk == 'true'
               shell: bash
               run: |
                   set -euo pipefail
