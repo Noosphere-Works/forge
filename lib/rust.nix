@@ -55,7 +55,20 @@ in
         ])
         fenixPkgs.complete.rustfmt
       ];
-      craneLib = (inputs.crane.mkLib pkgs).overrideToolchain toolchain;
+      # What a build needs and nothing else: these components are the ones
+      # nix-community.cachix.org serves prebuilt for fenix's own nixpkgs, so a
+      # runner fetches them instead of assembling them. The dev shell's
+      # `toolchain` adds rust-analyzer, rust-src and nightly rustfmt.
+      buildComponents = [
+        "cargo"
+        "clippy"
+        "rustc"
+        "rust-std"
+      ];
+      buildToolchain = fenixPkgs.stable.withComponents buildComponents;
+      craneLib = (inputs.crane.mkLib pkgs).overrideToolchain buildToolchain;
+      # `cargo fmt` reads the project's nightly rustfmt options.
+      fmtCraneLib = (inputs.crane.mkLib pkgs).overrideToolchain toolchain;
       src = pkgs.lib.cleanSourceWith {
         name = "source";
         src = pkgs.lib.cleanSource root;
@@ -72,7 +85,75 @@ in
         # Packages build without running the tests; `checks.test` runs them.
         doCheck = false;
       };
-      cargoArtifacts = craneLib.buildDepsOnly (
+      # The dependency build sees every workspace member at version 0.0.0, so
+      # a release's version bump (in `Cargo.toml` and `Cargo.lock`) leaves its
+      # derivation, and every cache of it, intact: only a dependency change
+      # rebuilds the dependencies. It all happens during evaluation, since
+      # crane fixes the dummy source's inputs there. Cargo fingerprints a
+      # dependency by its own identity, not its dependents', so the real build
+      # reuses these artifacts.
+      unversioned =
+        path:
+        craneLib.filters.cargoTomlDefault path
+        &&
+          path != [
+            "package"
+            "version"
+          ]
+        &&
+          path != [
+            "workspace"
+            "package"
+            "version"
+          ];
+      # `Cargo.lock` with each workspace member (a package without `source`)
+      # at 0.0.0.
+      normalisedLock =
+        lockSrc:
+        let
+          blocks = pkgs.lib.splitString "\n[[package]]\n" (builtins.readFile (lockSrc + "/Cargo.lock"));
+          member = block: !(pkgs.lib.hasInfix "\nsource = " ("\n" + block));
+          normalise =
+            block:
+            if member block then
+              pkgs.lib.concatMapStringsSep "\n" (
+                line: if pkgs.lib.hasPrefix "version = \"" line then "version = \"0.0.0\"" else line
+              ) (pkgs.lib.splitString "\n" block)
+            else
+              block;
+        in
+        builtins.toFile "Cargo.lock" (
+          pkgs.lib.concatStringsSep "\n[[package]]\n" (
+            [ (builtins.head blocks) ] ++ map normalise (builtins.tail blocks)
+          )
+        );
+      # The dependencies of `args` built with `lib`, named and versioned so
+      # that nothing but the dependencies themselves changes the derivation.
+      dependenciesOf =
+        lib: args:
+        lib.buildDepsOnly (
+          args
+          // {
+            pname = "workspace";
+            version = "0.0.0";
+            # `dummySrc` takes its place; crane warns when both are given.
+            src = null;
+            dummySrc = lib.mkDummySrc {
+              # Everything but `Cargo.lock`, which comes normalised.
+              src = pkgs.lib.cleanSourceWith {
+                inherit (args) src;
+                filter = path: _type: baseNameOf path != "Cargo.lock";
+              };
+              cargoLock = normalisedLock args.src;
+              cleanCargoTomlFilter = unversioned;
+            };
+            # Vendored from the real source: crane would otherwise vendor from
+            # `dummySrc` and build it during evaluation. The vendored crates do
+            # not include the workspace's own, so a version bump leaves them alone.
+            cargoVendorDir = lib.vendorCargoDeps { inherit (args) src; };
+          }
+        );
+      cargoArtifacts = dependenciesOf craneLib (
         commonArgs
         // {
           # The dependencies build for the tests too, so the checks reuse them.
@@ -89,7 +170,7 @@ in
         };
       };
       windows-toolchain = fenixPkgs.combine [
-        fenixPkgs.stable.toolchain
+        (fenixPkgs.stable.withComponents buildComponents)
         fenixPkgs.targets."x86_64-pc-windows-gnu".stable.rust-std
       ];
       muslPkgs = import pkgs.path {
@@ -100,13 +181,13 @@ in
         };
       };
       musl-toolchain = fenixPkgs.combine [
-        fenixPkgs.stable.toolchain
+        (fenixPkgs.stable.withComponents buildComponents)
         fenixPkgs.targets."x86_64-unknown-linux-musl".stable.rust-std
       ];
       # Same nixpkgs as the host: Apple Silicon cross-compiles to Intel Mac
       # with the rust-std target, not a second pkgs.
       appleX86-toolchain = fenixPkgs.combine [
-        fenixPkgs.stable.toolchain
+        (fenixPkgs.stable.withComponents buildComponents)
         fenixPkgs.targets."x86_64-apple-darwin".stable.rust-std
       ];
     in
@@ -118,10 +199,13 @@ in
         crateDir
         fenixPkgs
         toolchain
+        buildToolchain
         craneLib
+        fmtCraneLib
         src
         commonArgs
         cargoArtifacts
+        dependenciesOf
         ;
       windows = {
         pkgs = windowsPkgs;
@@ -185,10 +269,14 @@ in
         ;
       manifest = crateManifest workspace crate;
       args = pieceArgs workspace crate manifest;
-      # The cross targets build the crate's own dependencies (crane's default
-      # `cargoArtifacts`), so no other crate's dependencies need to cross.
-      crossArgs = {
+      # The cross targets build the crate's own dependencies, so no other
+      # crate's dependencies need to cross, with the versions normalised as for
+      # the workspace.
+      crossArgs = target: {
         inherit (args) pname version cargoExtraArgs;
+        cargoArtifacts = workspace.dependenciesOf target.craneLib (
+          target.commonArgs // { inherit (args) cargoExtraArgs; }
+        );
       };
       # A Darwin binary that runs without Nix: macOS's libiconv, then re-signed.
       portableDarwin =
@@ -211,13 +299,15 @@ in
       offered =
         if system == "x86_64-linux" then
           {
-            linux-x86_64 = musl.craneLib.buildPackage (musl.commonArgs // crossArgs);
-            windows-x86_64 = windows.craneLib.buildPackage (windows.commonArgs // crossArgs);
+            linux-x86_64 = musl.craneLib.buildPackage (musl.commonArgs // crossArgs musl);
+            windows-x86_64 = windows.craneLib.buildPackage (windows.commonArgs // crossArgs windows);
           }
         else if system == "aarch64-darwin" then
           {
             darwin-aarch64 = craneLib.buildPackage (portableDarwin args);
-            darwin-x86_64 = appleX86.craneLib.buildPackage (portableDarwin (appleX86.commonArgs // crossArgs));
+            darwin-x86_64 = appleX86.craneLib.buildPackage (
+              portableDarwin (appleX86.commonArgs // crossArgs appleX86)
+            );
           }
         else
           { };
@@ -290,6 +380,7 @@ in
     let
       inherit (workspace)
         craneLib
+        fmtCraneLib
         commonArgs
         cargoArtifacts
         src
@@ -304,7 +395,7 @@ in
           cargoClippyExtraArgs = "--all-targets --all-features -- --deny warnings";
         }
       );
-      fmt = craneLib.cargoFmt {
+      fmt = fmtCraneLib.cargoFmt {
         inherit src;
       };
       test = craneLib.cargoTest (

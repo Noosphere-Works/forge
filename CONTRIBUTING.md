@@ -22,6 +22,10 @@ The releasable piece is `piece/forge/piece.toml`. `np release draft forge <level
 
 The release workflows take one secret, `NP_GIT_TOKEN`, optional (README, Release). `release.yml` declares it, uses it in `plan` and passes only it to `release-piece.yml`, which uses it in `build` and `binary` and never in `publish`. A step that runs Nix on the project sets it, when it is not empty, as git's env config (`GIT_CONFIG_COUNT`, a `url.<token URL>.insteadOf` rewrite) and as `NIX_CONFIG`'s `access-tokens`, then unsets the variable. Both are needed: Nix's git fetcher (crane's `builtins.fetchGit` of a cargo git dependency) ignores `access-tokens`, and the `github:` fetcher ignores git's config. This repository has no such secret, so its own dispatch runs without it. On Linux runners, the `build` and `binary` jobs first delete preinstalled toolchains no forge job uses (dotnet, Android, GHC, Swift, Boost, the hosted tool cache) so crane's dependency build has the disk to finish; macOS runners skip that step.
 
+## Toolchain pin
+
+fenix does not follow `nixpkgs`: its toolchain paths must stay the ones nix-community.cachix.org serves. Move the fenix input only to a revision that cache has built (its `stable.rustc-unwrapped` narinfo answers 200), or every consumer assembles the toolchain again.
+
 ## Image workflow
 
 np's image workflow builds `lib.image` from the released commit, with the forge its project pins:

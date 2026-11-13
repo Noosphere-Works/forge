@@ -3,7 +3,8 @@
 
   # `lib` builds with the `pkgs` its caller passes. It uses forge's own crane,
   # fenix and bunix, so a project declares none of them; nixpkgs here serves
-  # the checks, the formatter and fenix.
+  # the checks and the formatter. fenix keeps its own nixpkgs, so its
+  # toolchain paths are the ones nix-community.cachix.org serves prebuilt.
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts = {
@@ -11,10 +12,7 @@
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
     crane.url = "github:ipetkov/crane";
-    fenix = {
-      url = "github:nix-community/fenix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    fenix.url = "github:nix-community/fenix";
     bunix = {
       url = "github:noosphere-works/bunix";
       inputs.nixpkgs.follows = "nixpkgs";

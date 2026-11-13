@@ -44,9 +44,33 @@ on:
                 description: The commit to release
                 required: true
                 type: string
+            nix_cache:
+                description: As in `release.yml`
+                required: false
+                type: string
+                default: ''
+            nix_cache_public_key:
+                description: As in `release.yml`
+                required: false
+                type: string
+                default: ''
+            linux_runner:
+                description: "The runner label for the `build` job. Empty: ubuntu-latest"
+                required: false
+                type: string
+                default: ''
         secrets:
             NP_GIT_TOKEN:
                 description: A fine-grained, read-only GitHub token (Contents) for the private github.com repositories the flake fetches, such as a cargo git dependency
+                required: false
+            NP_NIX_CACHE_ACCESS_KEY_ID:
+                description: As in `release.yml`
+                required: false
+            NP_NIX_CACHE_SECRET_ACCESS_KEY:
+                description: As in `release.yml`
+                required: false
+            NP_NIX_CACHE_SIGNING_KEY:
+                description: As in `release.yml`
                 required: false
 
 permissions:
@@ -54,13 +78,13 @@ permissions:
 
 jobs:
     build:
-        runs-on: ubuntu-latest
+        runs-on: ${{ inputs.linux_runner || 'ubuntu-latest' }}
         steps:
             # crane's dependency build for a large crate tree can exceed the ~14 GB the
             # stock Linux runner has free. These preinstalled toolchains are ones no forge
             # job uses; removing them before Nix is installed frees the disk.
             - name: Free runner disk
-              if: runner.os == 'Linux'
+              if: runner.os == 'Linux' && !startsWith(inputs.linux_runner, 'blacksmith-')
               shell: bash
               run: |
                   set -euo pipefail
@@ -72,9 +96,74 @@ jobs:
               with:
                   ref: ${{ inputs.target_sha }}
                   persist-credentials: false
+            # The Nix configuration: nix-community.cachix.org for fenix's prebuilt
+            # Rust toolchain, and the caller's own `nix_cache` when it sets one. With
+            # the cache secrets, the Nix daemon (root) reads the cache with that token
+            # and a post-build hook signs and uploads every path the job builds, the
+            # compiled dependencies included, so later runs fetch them.
+            - name: Configure Nix and its caches
+              id: nix
+              shell: bash
+              env:
+                  NIX_CACHE: ${{ inputs.nix_cache }}
+                  NIX_CACHE_PUBLIC_KEY: ${{ inputs.nix_cache_public_key }}
+                  ACCESS_KEY_ID: ${{ secrets.NP_NIX_CACHE_ACCESS_KEY_ID }}
+                  SECRET_ACCESS_KEY: ${{ secrets.NP_NIX_CACHE_SECRET_ACCESS_KEY }}
+                  SIGNING_KEY: ${{ secrets.NP_NIX_CACHE_SIGNING_KEY }}
+              run: |
+                  set -euo pipefail
+
+                  substituters=https://nix-community.cachix.org
+                  keys=nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
+                  hook=""
+
+                  if [ -n "$NIX_CACHE" ]; then
+                    if [ -z "$NIX_CACHE_PUBLIC_KEY" ]; then
+                      echo "nix_cache is set without nix_cache_public_key" >&2
+                      exit 1
+                    fi
+                    substituters="$substituters $NIX_CACHE"
+                    keys="$keys $NIX_CACHE_PUBLIC_KEY"
+
+                    if [ -n "$ACCESS_KEY_ID" ] && [ -n "$SECRET_ACCESS_KEY" ]; then
+                      root_home=$(eval echo ~root)
+                      sudo install -d -m 700 "$root_home/.aws"
+                      printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' \
+                        "$ACCESS_KEY_ID" "$SECRET_ACCESS_KEY" | sudo tee "$root_home/.aws/credentials" > /dev/null
+                      sudo chmod 600 "$root_home/.aws/credentials"
+
+                      if [ -n "$SIGNING_KEY" ]; then
+                        case "$NIX_CACHE" in
+                          *\?*) separator='&' ;;
+                          *) separator='?' ;;
+                        esac
+                        sudo install -d -m 755 /etc/nix
+                        printf '%s' "$SIGNING_KEY" | sudo tee /etc/nix/cache-signing-key > /dev/null
+                        sudo chmod 600 /etc/nix/cache-signing-key
+                        # The hook expands OUT_PATHS when it runs, not now.
+                        # shellcheck disable=SC2016
+                        printf '#!/bin/sh\nset -eu\n[ -n "${OUT_PATHS:-}" ] || exit 0\nexec /nix/var/nix/profiles/default/bin/nix copy --to %s $OUT_PATHS\n' \
+                          "'$NIX_CACHE${separator}compression=zstd&secret-key=/etc/nix/cache-signing-key'" \
+                          | sudo tee /etc/nix/upload-to-cache > /dev/null
+                        sudo chmod 755 /etc/nix/upload-to-cache
+                        hook=/etc/nix/upload-to-cache
+                      fi
+                    fi
+                  fi
+
+                  {
+                    echo 'conf<<NIX_CONF'
+                    echo 'experimental-features = nix-command flakes'
+                    echo "extra-substituters = $substituters"
+                    echo "extra-trusted-public-keys = $keys"
+                    if [ -n "$hook" ]; then
+                      echo "post-build-hook = $hook"
+                    fi
+                    echo 'NIX_CONF'
+                  } >> "$GITHUB_OUTPUT"
             - uses: cachix/install-nix-action@v31
               with:
-                  extra_nix_config: experimental-features = nix-command flakes
+                  extra_nix_config: ${{ steps.nix.outputs.conf }}
             - name: Build the package
               env:
                   PACKAGE: ${{ inputs.package }}
@@ -110,7 +199,7 @@ jobs:
             # stock Linux runner has free. These preinstalled toolchains are ones no forge
             # job uses; removing them before Nix is installed frees the disk.
             - name: Free runner disk
-              if: runner.os == 'Linux'
+              if: runner.os == 'Linux' && !startsWith(matrix.runner, 'blacksmith-')
               shell: bash
               run: |
                   set -euo pipefail
@@ -122,9 +211,74 @@ jobs:
               with:
                   ref: ${{ inputs.target_sha }}
                   persist-credentials: false
+            # The Nix configuration: nix-community.cachix.org for fenix's prebuilt
+            # Rust toolchain, and the caller's own `nix_cache` when it sets one. With
+            # the cache secrets, the Nix daemon (root) reads the cache with that token
+            # and a post-build hook signs and uploads every path the job builds, the
+            # compiled dependencies included, so later runs fetch them.
+            - name: Configure Nix and its caches
+              id: nix
+              shell: bash
+              env:
+                  NIX_CACHE: ${{ inputs.nix_cache }}
+                  NIX_CACHE_PUBLIC_KEY: ${{ inputs.nix_cache_public_key }}
+                  ACCESS_KEY_ID: ${{ secrets.NP_NIX_CACHE_ACCESS_KEY_ID }}
+                  SECRET_ACCESS_KEY: ${{ secrets.NP_NIX_CACHE_SECRET_ACCESS_KEY }}
+                  SIGNING_KEY: ${{ secrets.NP_NIX_CACHE_SIGNING_KEY }}
+              run: |
+                  set -euo pipefail
+
+                  substituters=https://nix-community.cachix.org
+                  keys=nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
+                  hook=""
+
+                  if [ -n "$NIX_CACHE" ]; then
+                    if [ -z "$NIX_CACHE_PUBLIC_KEY" ]; then
+                      echo "nix_cache is set without nix_cache_public_key" >&2
+                      exit 1
+                    fi
+                    substituters="$substituters $NIX_CACHE"
+                    keys="$keys $NIX_CACHE_PUBLIC_KEY"
+
+                    if [ -n "$ACCESS_KEY_ID" ] && [ -n "$SECRET_ACCESS_KEY" ]; then
+                      root_home=$(eval echo ~root)
+                      sudo install -d -m 700 "$root_home/.aws"
+                      printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' \
+                        "$ACCESS_KEY_ID" "$SECRET_ACCESS_KEY" | sudo tee "$root_home/.aws/credentials" > /dev/null
+                      sudo chmod 600 "$root_home/.aws/credentials"
+
+                      if [ -n "$SIGNING_KEY" ]; then
+                        case "$NIX_CACHE" in
+                          *\?*) separator='&' ;;
+                          *) separator='?' ;;
+                        esac
+                        sudo install -d -m 755 /etc/nix
+                        printf '%s' "$SIGNING_KEY" | sudo tee /etc/nix/cache-signing-key > /dev/null
+                        sudo chmod 600 /etc/nix/cache-signing-key
+                        # The hook expands OUT_PATHS when it runs, not now.
+                        # shellcheck disable=SC2016
+                        printf '#!/bin/sh\nset -eu\n[ -n "${OUT_PATHS:-}" ] || exit 0\nexec /nix/var/nix/profiles/default/bin/nix copy --to %s $OUT_PATHS\n' \
+                          "'$NIX_CACHE${separator}compression=zstd&secret-key=/etc/nix/cache-signing-key'" \
+                          | sudo tee /etc/nix/upload-to-cache > /dev/null
+                        sudo chmod 755 /etc/nix/upload-to-cache
+                        hook=/etc/nix/upload-to-cache
+                      fi
+                    fi
+                  fi
+
+                  {
+                    echo 'conf<<NIX_CONF'
+                    echo 'experimental-features = nix-command flakes'
+                    echo "extra-substituters = $substituters"
+                    echo "extra-trusted-public-keys = $keys"
+                    if [ -n "$hook" ]; then
+                      echo "post-build-hook = $hook"
+                    fi
+                    echo 'NIX_CONF'
+                  } >> "$GITHUB_OUTPUT"
             - uses: cachix/install-nix-action@v31
               with:
-                  extra_nix_config: experimental-features = nix-command flakes
+                  extra_nix_config: ${{ steps.nix.outputs.conf }}
             - name: Build, inspect and pack the binary
               env:
                   PIECE: ${{ inputs.piece }}

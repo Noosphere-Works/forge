@@ -38,9 +38,38 @@ on:
                 description: The pending releases at the commit, as JSON (written by np release)
                 required: true
                 type: string
+            nix_cache:
+                description: "An S3-compatible Nix binary cache the jobs read and, with the cache secrets, write: `s3://<bucket>?endpoint=<host>&region=<region>`. Empty: none"
+                required: false
+                type: string
+                default: ''
+            nix_cache_public_key:
+                description: The public key `nix_cache` is signed with (`<name>:<base64>`); required with it
+                required: false
+                type: string
+                default: ''
+            linux_runner:
+                description: "The runner label for Linux jobs. Empty: ubuntu-latest"
+                required: false
+                type: string
+                default: ''
+            macos_runner:
+                description: "The runner label for macOS jobs. Empty: macos-15"
+                required: false
+                type: string
+                default: ''
         secrets:
             NP_GIT_TOKEN:
                 description: A fine-grained, read-only GitHub token (Contents) for the private github.com repositories the flake fetches, such as a cargo git dependency
+                required: false
+            NP_NIX_CACHE_ACCESS_KEY_ID:
+                description: The access key id of a token that may read and write `nix_cache`
+                required: false
+            NP_NIX_CACHE_SECRET_ACCESS_KEY:
+                description: The secret access key of that token
+                required: false
+            NP_NIX_CACHE_SIGNING_KEY:
+                description: The secret key (`nix key generate-secret`) every uploaded path is signed with
                 required: false
 
 run-name: release ${{ inputs.title || inputs.target_sha }}
@@ -71,6 +100,8 @@ jobs:
                   TARGET_SHA: ${{ inputs.target_sha }}
                   RELEASES: ${{ inputs.releases }}
                   NP_GIT_TOKEN: ${{ secrets.NP_GIT_TOKEN }}
+                  LINUX_RUNNER: ${{ inputs.linux_runner }}
+                  MACOS_RUNNER: ${{ inputs.macos_runner }}
               run: |
                   # Check every release `np release` dispatched against the commit it pinned, find
                   # each piece's release targets, and hand the checked list to the piece jobs.
@@ -97,8 +128,8 @@ jobs:
 
                   # The systems whose release targets a runner builds, each `<system> <runner>`.
                   # The flake's other systems are not released.
-                  runners="x86_64-linux ubuntu-latest
-                  aarch64-darwin macos-15"
+                  runners="x86_64-linux ${LINUX_RUNNER:-ubuntu-latest}
+                  aarch64-darwin ${MACOS_RUNNER:-macos-15}"
 
                   problems=""
 
@@ -461,5 +492,11 @@ jobs:
             package: ${{ matrix.package }}
             targets: ${{ toJSON(matrix.targets) }}
             target_sha: ${{ inputs.target_sha }}
+            nix_cache: ${{ inputs.nix_cache }}
+            nix_cache_public_key: ${{ inputs.nix_cache_public_key }}
+            linux_runner: ${{ inputs.linux_runner }}
         secrets:
             NP_GIT_TOKEN: ${{ secrets.NP_GIT_TOKEN }}
+            NP_NIX_CACHE_ACCESS_KEY_ID: ${{ secrets.NP_NIX_CACHE_ACCESS_KEY_ID }}
+            NP_NIX_CACHE_SECRET_ACCESS_KEY: ${{ secrets.NP_NIX_CACHE_SECRET_ACCESS_KEY }}
+            NP_NIX_CACHE_SIGNING_KEY: ${{ secrets.NP_NIX_CACHE_SIGNING_KEY }}

@@ -205,6 +205,24 @@ forge passes it to the jobs that run Nix on the project, and to no other: `plan`
 
 To change a recipe, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Caches and runners
+
+The Rust toolchain comes prebuilt from [nix-community.cachix.org](https://nix-community.cachix.org): fenix keeps its own nixpkgs, so its paths are the ones that cache serves, and the release and image jobs trust it. Release builds use only `cargo`, `clippy`, `rustc` and `rust-std`; the dev shell's toolchain adds rust-analyzer, rust-src and nightly rustfmt.
+
+The dependency build sees every workspace member at version 0.0.0, so a release's version bump does not change it: only a dependency change rebuilds the dependencies. A path dependency on a workspace member must therefore carry no `version` requirement.
+
+A project can also give the release and image jobs its own binary cache and runners. Everything is optional, read from the caller's GitHub settings, and paid for by the caller: forge names no cache and no runner of its own.
+
+| Setting | Kind | Holds |
+| --- | --- | --- |
+| `NP_NIX_CACHE` | variable | An S3-compatible cache, e.g. `s3://<bucket>?endpoint=<account>.r2.cloudflarestorage.com&region=auto` for Cloudflare R2 |
+| `NP_NIX_CACHE_PUBLIC_KEY` | variable | The cache's public key, `<name>:<base64>` (from `nix key convert-secret-to-public`) |
+| `NP_NIX_CACHE_ACCESS_KEY_ID`, `NP_NIX_CACHE_SECRET_ACCESS_KEY` | secrets | A token that may read and write that bucket only |
+| `NP_NIX_CACHE_SIGNING_KEY` | secret | The secret key every uploaded path is signed with (`nix key generate-secret --key-name <name>`) |
+| `NP_LINUX_RUNNER`, `NP_MACOS_RUNNER` | variables | Runner labels, e.g. `blacksmith-8vcpu-ubuntu-2404`; empty means `ubuntu-latest` and `macos-15` |
+
+np's emitted `release.yml` passes the variables to `release.yml` (`nix_cache`, `nix_cache_public_key`, `linux_runner`, `macos_runner`) with `secrets: inherit`, and its `image.yml` reads them itself. With the cache set, the jobs read it; with the two token secrets too, the Nix daemon reads it with that token; with the signing key as well, a post-build hook signs and uploads every path a job builds, the compiled dependencies included, compressed with zstd. A runner label starting with `blacksmith-` skips freeing runner disk, since those runners have room. Set the variables and secrets at the organisation to share one cache across its repositories; Nix never deletes from the bucket, so give it an expiry rule.
+
 ## License
 
 MIT, see [LICENSE.md](LICENSE.md).
