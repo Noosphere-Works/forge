@@ -10,11 +10,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794844963,
-        "narHash": "sha256-BvyGOkqZehqiHQwmPctGqjqGcVef3wMPp6hrFR+1wVM=",
+        "lastModified": 1794847538,
+        "narHash": "sha256-KZDr1GjzILnxCIGXQS3YhRcx7pN23rilWgVPEoApniw=",
         "owner": "noosphere-works",
         "repo": "bunix",
-        "rev": "49ff89e17c352789a00b8d90dd0e948f73fd27fb",
+        "rev": "fd2d8ca7324391850f554ed226c59d218a83f8fd",
         "type": "github"
       },
       "original": {
