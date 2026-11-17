@@ -37,7 +37,9 @@ in
 
   # SurrealDB's `surreal`, from its release tarball. The Linux build is a glibc
   # executable whose loader is the FHS `/lib64/ld-linux-x86-64.so.2`, which Nix
-  # lacks, so its loader is patched to Nix's.
+  # lacks, so its loader is patched to Nix's. It also links `libstdc++.so.6`
+  # and `libgcc_s.so.1`, which `stdenv.cc.cc.lib` provides for the patch hook to
+  # find.
   surrealdb =
     {
       pkgs,
@@ -49,6 +51,8 @@ in
       pname = "surrealdb";
 
       nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.autoPatchelfHook ];
+
+      buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.stdenv.cc.cc.lib ];
 
       sourceRoot = ".";
 
