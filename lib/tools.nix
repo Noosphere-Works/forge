@@ -122,7 +122,9 @@ in
       '';
     };
 
-  # The Supabase CLI, `supabase`, from its release tarball.
+  # The Supabase CLI, `supabase`, from its release tarball. The Linux build is a
+  # bun-compiled glibc executable, so its loader is patched to Nix's. The binary
+  # stays unstripped so the `.bun` section that holds its payload is untouched.
   supabase =
     {
       pkgs,
@@ -133,15 +135,18 @@ in
       inherit pkgs version sources;
       pname = "supabase";
 
+      nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.autoPatchelfHook ];
+
       dontStrip = true;
-      dontPatchELF = true;
 
       sourceRoot = ".";
 
       install = ''
+        runHook preInstall
         mkdir -p $out/bin
         cp supabase $out/bin/
         chmod +x $out/bin/supabase
+        runHook postInstall
       '';
     };
 }
