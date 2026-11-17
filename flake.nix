@@ -372,6 +372,62 @@
               evaluated "image";
           }
           // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-darwin") {
+            # Builds SurrealDB from the 3.3.4 pins np prescribes
+            # (`surrealdb_package` in np's `surface/database/surreal/mod.rs`)
+            # and runs it, so a change to the tarball layout or the Linux
+            # loader fails here.
+            surrealdb =
+              let
+                surrealdb = tools.surrealdb {
+                  inherit pkgs;
+                  version = "3.3.4";
+                  sources = {
+                    aarch64-darwin = {
+                      url = "https://github.com/surrealdb/surrealdb/releases/download/v3.3.4/surreal-v3.3.4.darwin-arm64.tgz";
+                      sha256 = "sha256-0LCvxHlIpGzqydsXjSoQp+sh4cTyGadLNXPIUBIu2fs=";
+                    };
+                    x86_64-linux = {
+                      url = "https://github.com/surrealdb/surrealdb/releases/download/v3.3.4/surreal-v3.3.4.linux-amd64.tgz";
+                      sha256 = "sha256-ZZMHGDOtnIXPUzz3CxZD6wiWbIaPhiQAHjCDnqKaJok=";
+                    };
+                  };
+                };
+              in
+              pkgs.runCommand "surrealdb" { } ''
+                export HOME=$TMPDIR
+                version=$(${surrealdb}/bin/surreal version)
+                case "$version" in
+                  3.3.4*) ;;
+                  *) echo "surreal version printed: $version" >&2; exit 1 ;;
+                esac
+                touch $out
+              '';
+
+            # Builds Surrealist from the 3.9.13 pins np prescribes
+            # (`surrealist_package` in the same file) and checks the launcher
+            # is installed; the GUI is not started.
+            surrealist =
+              let
+                surrealist = tools.surrealist {
+                  inherit pkgs;
+                  version = "3.9.13";
+                  sources = {
+                    aarch64-darwin = {
+                      url = "https://github.com/surrealdb/surrealist/releases/download/surrealist-v3.9.13/Surrealist_aarch64.app.tar.gz";
+                      sha256 = "sha256-mzNzhYznyLGJhnxlxUf+xBV9o7Jg3ePLj7QRhNsWAMc=";
+                    };
+                    x86_64-linux = {
+                      url = "https://github.com/surrealdb/surrealist/releases/download/surrealist-v3.9.13/Surrealist_3.9.13_amd64.AppImage";
+                      sha256 = "sha256-zWC+FT2PBKBNN/bnXkIOu94CsZXo92L7jEND9FJEjC8=";
+                    };
+                  };
+                };
+              in
+              pkgs.runCommand "surrealist" { } ''
+                [ -x ${surrealist}/bin/surrealist ] || { echo "no executable ${surrealist}/bin/surrealist" >&2; exit 1; }
+                touch $out
+              '';
+
             # Builds the Supabase CLI from the 3.1.0 pins np prescribes
             # (`supabase_package` in np's `surface/database/postgres/mod.rs`)
             # and runs it, so a change to the tarball layout fails here.

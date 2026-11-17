@@ -35,7 +35,9 @@ in
 {
   inherit fetched;
 
-  # SurrealDB's `surreal`, from its release tarball.
+  # SurrealDB's `surreal`, from its release tarball. The Linux build is a glibc
+  # executable whose loader is the FHS `/lib64/ld-linux-x86-64.so.2`, which Nix
+  # lacks, so its loader is patched to Nix's.
   surrealdb =
     {
       pkgs,
@@ -46,52 +48,59 @@ in
       inherit pkgs version sources;
       pname = "surrealdb";
 
+      nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.autoPatchelfHook ];
+
       sourceRoot = ".";
 
       install = ''
+        runHook preInstall
         mkdir -p $out/bin
         cp surreal $out/bin/
         chmod +x $out/bin/surreal
+        runHook postInstall
       '';
     };
 
-  # Surrealist, SurrealDB's GUI: the app bundle on macOS, the AppImage on
-  # Linux.
+  # Surrealist, SurrealDB's GUI: the app bundle on macOS. The Linux release is
+  # an AppImage, which needs FUSE and an FHS loader and so cannot run as a raw
+  # file under Nix; `appimageTools.wrapType2` extracts it and runs it in an FHS
+  # environment as `$out/bin/surrealist`.
   surrealist =
     {
       pkgs,
       version,
       sources,
     }:
-    fetched {
-      inherit pkgs version sources;
-      pname = "surrealist";
-      stdenv = pkgs.stdenvNoCC;
+    let
+      hostSystem = pkgs.stdenv.hostPlatform.system;
+    in
+    if pkgs.stdenv.hostPlatform.isLinux then
+      pkgs.appimageTools.wrapType2 {
+        pname = "surrealist";
+        inherit version;
+        src = pkgs.fetchurl (
+          sources.${hostSystem} or (throw "Unsupported system for surrealist: ${hostSystem}")
+        );
+      }
+    else
+      fetched {
+        inherit pkgs version sources;
+        pname = "surrealist";
+        stdenv = pkgs.stdenvNoCC;
 
-      nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.makeWrapper ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
 
-      dontBuild = true;
-      dontUnpack = pkgs.stdenv.hostPlatform.isLinux;
-      sourceRoot = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin "Surrealist.app";
+        dontBuild = true;
+        sourceRoot = "Surrealist.app";
 
-      install = ''
-        runHook preInstall
-        mkdir -p $out/bin
-
-        ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
-          mkdir -p $out/Applications
+        install = ''
+          runHook preInstall
+          mkdir -p $out/bin $out/Applications
           cp -r . $out/Applications/Surrealist.app
           makeWrapper "$out/Applications/Surrealist.app/Contents/MacOS/surrealist" $out/bin/surrealist
-        ''}
-
-        ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-          cp "$src" $out/bin/surrealist
-          chmod +x $out/bin/surrealist
-        ''}
-
-        runHook postInstall
-      '';
-    };
+          runHook postInstall
+        '';
+      };
 
   # `surrealkit`, SurrealDB's schema-migration CLI, from its release tarball.
   surrealkit =
