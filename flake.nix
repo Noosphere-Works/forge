@@ -428,22 +428,22 @@
                 touch $out
               '';
 
-            # Builds the Supabase CLI from the 3.1.0 pins np prescribes
+            # Builds the Supabase CLI from the 3.2.0 pins np prescribes
             # (`supabase_package` in np's `surface/database/postgres/mod.rs`)
             # and runs it, so a change to the tarball layout fails here.
             supabase =
               let
                 supabase = tools.supabase {
                   inherit pkgs;
-                  version = "3.1.0";
+                  version = "3.2.0";
                   sources = {
                     aarch64-darwin = {
-                      url = "https://github.com/supabase/cli/releases/download/v3.1.0/supabase_darwin_arm64.tar.gz";
-                      sha256 = "sha256-K9KkX9XNnkW2OTz9U0ZRrB2/t4yKMRt/SOFBQ1lOeiY=";
+                      url = "https://github.com/supabase/cli/releases/download/v3.2.0/supabase_darwin_arm64.tar.gz";
+                      sha256 = "sha256-yeJ82vhI8haHnfCjVPypbH5awNFSfZNLcw7GK6NIuG0=";
                     };
                     x86_64-linux = {
-                      url = "https://github.com/supabase/cli/releases/download/v3.1.0/supabase_linux_amd64.tar.gz";
-                      sha256 = "sha256-2+n9ZncTN/wZhyfahrnTVRMC+Hpwkc2Hgb4qTNDIrE0=";
+                      url = "https://github.com/supabase/cli/releases/download/v3.2.0/supabase_linux_amd64.tar.gz";
+                      sha256 = "sha256-+4ixdagXVjUFvgLGCHIGC8uNXIaaGqVlbq6whdSi8eQ=";
                     };
                   };
                 };
@@ -451,7 +451,7 @@
               pkgs.runCommand "supabase" { } ''
                 export HOME=$TMPDIR
                 version=$(${supabase}/bin/supabase --version)
-                [ "$version" = "3.1.0" ] || { echo "supabase --version printed: $version" >&2; exit 1; }
+                [ "$version" = "3.2.0" ] || { echo "supabase --version printed: $version" >&2; exit 1; }
                 touch $out
               '';
           };
