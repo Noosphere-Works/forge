@@ -122,7 +122,7 @@ in
       '';
     };
 
-  # The Supabase CLI, `supabase` and `supabase-go`, from its release tarball.
+  # The Supabase CLI, `supabase`, from its release tarball.
   supabase =
     {
       pkgs,
@@ -141,8 +141,7 @@ in
       install = ''
         mkdir -p $out/bin
         cp supabase $out/bin/
-        cp supabase-go $out/bin/
-        chmod +x $out/bin/supabase $out/bin/supabase-go
+        chmod +x $out/bin/supabase
       '';
     };
 }
