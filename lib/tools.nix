@@ -65,47 +65,6 @@ in
       '';
     };
 
-  # Surrealist, SurrealDB's GUI: the app bundle on macOS. The Linux release is
-  # an AppImage, which needs FUSE and an FHS loader and so cannot run as a raw
-  # file under Nix; `appimageTools.wrapType2` extracts it and runs it in an FHS
-  # environment as `$out/bin/surrealist`.
-  surrealist =
-    {
-      pkgs,
-      version,
-      sources,
-    }:
-    let
-      hostSystem = pkgs.stdenv.hostPlatform.system;
-    in
-    if pkgs.stdenv.hostPlatform.isLinux then
-      pkgs.appimageTools.wrapType2 {
-        pname = "surrealist";
-        inherit version;
-        src = pkgs.fetchurl (
-          sources.${hostSystem} or (throw "Unsupported system for surrealist: ${hostSystem}")
-        );
-      }
-    else
-      fetched {
-        inherit pkgs version sources;
-        pname = "surrealist";
-        stdenv = pkgs.stdenvNoCC;
-
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-
-        dontBuild = true;
-        sourceRoot = "Surrealist.app";
-
-        install = ''
-          runHook preInstall
-          mkdir -p $out/bin $out/Applications
-          cp -r . $out/Applications/Surrealist.app
-          makeWrapper "$out/Applications/Surrealist.app/Contents/MacOS/surrealist" $out/bin/surrealist
-          runHook postInstall
-        '';
-      };
-
   # `surrealkit`, SurrealDB's schema-migration CLI, from its release tarball.
   surrealkit =
     {

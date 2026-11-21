@@ -152,7 +152,6 @@ Each piece builds in its own copy of the workspace with the `node_modules` tree 
 On top of it, each with `{ pkgs, version, sources }`:
 
 - `lib.tools.surrealdb`: `bin/surreal`.
-- `lib.tools.surrealist`: the app (macOS) or AppImage (Linux) as `bin/surrealist`.
 - `lib.tools.surrealkit`: `bin/surrealkit`.
 - `lib.tools.supabase`: `bin/supabase` and `bin/supabase-go`.
 
