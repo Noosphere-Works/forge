@@ -372,7 +372,7 @@
               evaluated "image";
           }
           // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-darwin") {
-            # Builds SurrealDB from the 3.3.4 pins np prescribes
+            # Builds SurrealDB from the 4.0.1 pins np prescribes
             # (`surrealdb_package` in np's `surface/database/surreal/mod.rs`)
             # and runs it, so a change to the tarball layout or the Linux
             # loader fails here.
@@ -380,15 +380,15 @@
               let
                 surrealdb = tools.surrealdb {
                   inherit pkgs;
-                  version = "3.3.4";
+                  version = "4.0.1";
                   sources = {
                     aarch64-darwin = {
-                      url = "https://github.com/surrealdb/surrealdb/releases/download/v3.3.4/surreal-v3.3.4.darwin-arm64.tgz";
-                      sha256 = "sha256-0LCvxHlIpGzqydsXjSoQp+sh4cTyGadLNXPIUBIu2fs=";
+                      url = "https://github.com/surrealdb/surrealdb/releases/download/v4.0.1/surreal-v4.0.1.darwin-arm64.tgz";
+                      sha256 = "sha256-gu+dqVjMzL8Tp9hXQgjb7sLr9PhzKlECRsjXPvbjlH0=";
                     };
                     x86_64-linux = {
-                      url = "https://github.com/surrealdb/surrealdb/releases/download/v3.3.4/surreal-v3.3.4.linux-amd64.tgz";
-                      sha256 = "sha256-ZZMHGDOtnIXPUzz3CxZD6wiWbIaPhiQAHjCDnqKaJok=";
+                      url = "https://github.com/surrealdb/surrealdb/releases/download/v4.0.1/surreal-v4.0.1.linux-amd64.tgz";
+                      sha256 = "sha256-nZ0mMTvz8a7/0Gbe+Uk5MseQU/ybyo8bOfg9UR9lV30=";
                     };
                   };
                 };
@@ -397,7 +397,7 @@
                 export HOME=$TMPDIR
                 version=$(${surrealdb}/bin/surreal version)
                 case "$version" in
-                  3.3.4*) ;;
+                  4.0.1*) ;;
                   *) echo "surreal version printed: $version" >&2; exit 1 ;;
                 esac
                 touch $out
